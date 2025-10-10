@@ -7,53 +7,33 @@ from torch.utils.data import DataLoader
 
 
 class SamplewiseCalculatorFunctorch:
-    def __init__(self,
-                 model: nn.Module):
-        self.model = model
+    def __init__(self,):
+        self._track_running_stats = True
 
-    def _wrap_model_opacus(
-        self,
-        model: nn.Module,
-        optimizer: torch.optim.Optimizer,
-        criterion,
-        data_loader: DataLoader
-    ) -> tuple:
+    def compute(self, model, loss_fn, inputs, targets):
         """
-        Wrap model with opacus privacy engine. We just need the per sample
-        gradients so set max_grad_norm to 1e6 and noise_multiplier to 0 while
-        using 'ghost' mode.
-
-        Returns:
-            Tuple of (private_model, private_optimizer, private_criterion,
-                     private_data_loader)
+        Compute per-sample gradient norms for both the network parameters and
+        the loss function using functorch.
         """
-        if self.method == "opacus":
-            if self.privacy_engine is None:
-                self.privacy_engine = PrivacyEngine()
-
-            (private_model, private_optimizer, private_criterion,
-             private_data_loader) = self.privacy_engine.make_private(
-                module=model,
-                optimizer=optimizer,
-                criterion=criterion,
-                data_loader=data_loader,
-                max_grad_norm=1e6,  # Effectively disable clipping
-                noise_multiplier=0,  # Effectively disable noise
-                grad_sample_mode="ghost",
+        # Set track_running_stats to False for BatchNorm layers to only update on the
+        # current batch
+        self.model = self.set_track_running_stats(model, False)
+        per_sample_grad_norms_network = (
+            self._compute_per_sample_gradient_norm_network(
+                model, inputs
             )
+        )
+        per_sample_grad_norms_loss = (
+            self._compute_per_sample_gradient_norm_loss(
+                model, loss_fn, inputs, targets
+            )
+        )
+        return {
+            "per_sample_grad_norms_network": per_sample_grad_norms_network,
+            "per_sample_grad_norms_loss": per_sample_grad_norms_loss
+        }
 
-            return (private_model, private_optimizer, private_criterion,
-                    private_data_loader)
-
-    def calculate(self, data):
-        """Calculate per-sample metrics. This functions gets called by
-        analyzer. It should use _get_functions/compute_functions to retrieve necessary data.
-        """
-        # get_per_sample_gradient_norms_loss
-        # get_per_sample_gradient_norms_network
-        pass
-
-    def compute_per_sample_gradient_network_sum(self, model, inputs):
+    def _compute_per_sample_gradient_network_sum(self, model, inputs):
         """"""
         def model_fn(params, buffers, x):
             return func.functional_call(model, (params, buffers), x)  # .sum()
@@ -69,11 +49,14 @@ class SamplewiseCalculatorFunctorch:
 
         return per_sample_grads
 
-    # Function to compute per-sample gradient magnitudes for the network function f(x)
-    def compute_per_sample_gradient_norm_network(self, model, inputs):
-        ## All samples simultaneously
+    def _compute_per_sample_gradient_norm_network(self, model, inputs):
+        """
+        Compute per-sample gradient magnitudes for the network function f(x)
+        using functorch. -> ∇_theta f
+        """
+        # All samples simultaneously
         inputs = inputs.unsqueeze(1)  # Due to vmap
-        per_sample_grads = self.compute_per_sample_gradient_network_sum(model, inputs)
+        per_sample_grads = self._compute_per_sample_gradient_network_sum(model, inputs)
         # Assert the correct shape of the gradients
         # (batch_size, ...)
         params = dict(model.named_parameters())
@@ -85,7 +68,10 @@ class SamplewiseCalculatorFunctorch:
 
         # Compute per-sample gradient magnitude (L2 norm)
         per_sample_grad_magnitudes = torch.stack(
-            [(g**2).sum(dim=tuple(range(1, g.ndim))) for g in per_sample_grads.values()]
+            [
+                (g**2).sum(dim=tuple(range(1, g.ndim)))
+                for g in per_sample_grads.values()
+            ]
         ).sum(
             dim=0
         )  # Sum across parameters
@@ -93,7 +79,7 @@ class SamplewiseCalculatorFunctorch:
 
         return batch_grad_magnitudes
 
-    def compute_per_sample_grad_loss(self, model, loss_fn, inputs, targets):
+    def _compute_per_sample_grad_loss(self, model, loss_fn, inputs, targets):
         def loss_fn_wrapped(outputs, targets):
             return loss_fn(outputs, targets)  # Sum ensures scalar loss
 
@@ -104,9 +90,14 @@ class SamplewiseCalculatorFunctorch:
 
         return per_sample_loss_grads
 
-    # Function to compute per-sample gradient magnitudes for ∇_f L
-    def compute_per_sample_gradient_norm_loss(self, model, loss_fn, inputs, targets):
-        per_sample_loss_grads = compute_per_sample_grad_loss(
+    def _compute_per_sample_gradient_norm_loss(
+        self, model, loss_fn, inputs, targets
+    ):
+        """
+        Compute per-sample gradient magnitudes for the loss function L(f(x), y)
+        using functorch. -> ∇_f L
+        """
+        per_sample_loss_grads = self._compute_per_sample_grad_loss(
             model, loss_fn, inputs, targets
         )
         # Assert the correct shape of the gradients
@@ -120,6 +111,16 @@ class SamplewiseCalculatorFunctorch:
 
         return batch_grad_magnitudes
 
+    def set_track_running_stats(self, model, track=True):
+        """
+        Set the track_running_stats attribute of all BatchNorm layers to the specified value.
+        This is a hack to use batch statistics without updating the buffers.
+        """
+        for m in model.modules():
+            if isinstance(m, nn.modules.batchnorm._BatchNorm):
+                m.track_running_stats = track
+            self._track_running_stats = track
+        return model
 
 class SamplewiseCalculatorOpacus:
     def __init__(self,
@@ -207,3 +208,4 @@ class SamplewiseCalculatorOpacus:
 
         return None
     def calculate(self, data):
+        pass

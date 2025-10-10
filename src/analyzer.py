@@ -37,7 +37,7 @@ class Analyzer(pl.LightningModule):
         self.optimizer = optimizer
         self.criterion = criterion
         self.data_loader = data_loader
-        self.sample_wise_calculator = None
+        self.sample_calc = None
         self.sample_wise_engine = sample_wise_engine
 
         # Turn off automatic optimization to handle optimizer steps manually
@@ -49,10 +49,10 @@ class Analyzer(pl.LightningModule):
             )
 
         if sample_wise_engine == "functorch":
-            self.samplewise_calculator = SamplewiseCalculatorFunctorch()
+            self.sample_calc = SamplewiseCalculatorFunctorch()
         elif sample_wise_engine == "opacus":
-            self.samplewise_calculator = SamplewiseCalculatorOpacus()
-            # get wrapped components with _get_wrappings and set them as 
+            self.sample_calc = SamplewiseCalculatorOpacus()
+            # get wrapped components with _get_wrappings and set them as
             # new self.model etc
 
         self.linearizer = Linearizer()
@@ -61,8 +61,33 @@ class Analyzer(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        # manual optimization logic
-        # use _backward_pass to handle different engines
+        opt = self.optimizers()
+        opt.zero_grad()
+        inputs, targets = batch
+        outputs = self.model(inputs)
+        loss = self.criterion(outputs, targets)
+
+        # Compute samplewise metrics
+        samples_results = self.sample_calc.compute(
+            self.model,
+            self.criterion,
+            inputs,
+            targets
+        )
+
+        # Use _backward_pass to handle different engines in the future
+        self.manual_backward(loss)  # or loss.backward
+        opt.step()
+
+        # log block
+        self.log("train_acc",
+                 (outputs.argmax(dim=1) == targets).float().mean())
+        self.log("train_loss", loss)
+        self.log("per_sample_grad_norms",
+                 samples_results["per_sample_grad_norms_network"])
+        self.log("per_sample_grad_norms_loss",
+                 samples_results["per_sample_grad_norms_loss"])
+
         return None
 
     def _backward_pass(self, loss):
@@ -105,10 +130,20 @@ class PerspicTrainer(pl.Trainer):
 
 
 if __name__ == "__main__":
+    # Example usage
+    model = nn.Linear(10, 2)
+    x, y = torch.randn(32, 10), torch.randint(0, 2, (32,))
+    from torch.utils.data import DataLoader, TensorDataset
+    data_loader = DataLoader(TensorDataset(x, y), batch_size=8)
 
-    # minimal example sketch
-    # model = ...
-    # analyzer = Analyzer(model=model, sample_wise_engine="...")
-    # trainer = PerspicTrainer(analyzer=analyzer, max_epochs=10)
-    # trainer.fit()
-    pass
+    analyzer = Analyzer(
+        model=model,
+        optimizer=torch.optim.SGD(model.parameters(), lr=0.01),
+        criterion=nn.CrossEntropyLoss(),
+        data_loader=data_loader,
+        sample_wise_engine="functorch",
+    )
+    trainer = PerspicTrainer(analyzer=analyzer,
+                             max_epochs=5,
+                             log_every_n_steps=1)
+    trainer.fit()
