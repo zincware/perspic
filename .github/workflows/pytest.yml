@@ -29,8 +29,8 @@ jobs:
       - name: Install package
         run: |
           pip install .
-            - name: Pytest
-              run: |
-                python -m pytest tests/ --maxfail=5 --disable-warnings -q
+      - name: Pytest
+        run: |
+          python -m pytest tests/ --maxfail=5 --disable-warnings -q
       # TODO: enable codecov upload
       # - name: Upload coverage to Codecov
