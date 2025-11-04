@@ -1,7 +1,7 @@
 import io
-from shutil import copy
-
+import copy
 import torch
+from typing import Tuple
 
 
 class Linearizer:
@@ -13,20 +13,28 @@ class Linearizer:
         # its own optimizer
         # zero-grad before step
         # step
-        # loss of the next batch in the dataloader -> self.loss_fn(x_1, y_1)
-        # scheduler 
+        # scheduler
         # restore
         pass
 
-    def probe_train_step(model, criterion, x, y, x_1, y_1, eta, scheduler=None):
+    def probe_train_step(
+        self,
+        model,
+        criterion,
+        x,
+        y,
+        eta,
+        scheduler=None,
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor
+    ]:
         """
-        Perform a tiny optimizer step (η) using batch-stats but zero-momentum, then undo everything.
+        Perform a tiny optimizer step (η) using batch-stats but zero-momentum,
+        then undo everything.
         Args:
             model      : nn.Module
             criterion  : loss function
             x, y       : current batch input and targets
-            x_1, y_1   : next batch input and targets (only necessary for quantities
-                         beyond linear response)
             eta        : small learning rate, e.g. 1e-5
             scheduler  : optional lr-scheduler (snapshot & restore if provided)
         Returns:
@@ -34,12 +42,14 @@ class Linearizer:
         """
         # ————————————————————————————————
         # 1) Snapshot states
-        # 1a. Model (params + buffers) via in‐memory buffer to preserve device 
+        # 1a. Model (params + buffers) via in‐memory buffer to preserve device
         # placement
         buf = io.BytesIO()
         torch.save(model.state_dict(), buf)
         orig_model_state = buf.getvalue()
+
         # 1b. Scheduler internals, if any
+        orig_sched_state = None
         if scheduler is not None:
             orig_sched_state = copy.deepcopy(scheduler.state_dict())
         # 1c. Train/eval mode
@@ -48,12 +58,21 @@ class Linearizer:
             model, track=False
         )  # Only use current batch stats
         model.train()  # still uses batch‐stats, but buffers won’t update
+        device = (
+            next(model.parameters()).device
+            if any(p.requires_grad for p in model.parameters())
+            else None
+        )
+
         try:
             # ————————————————————————————————
             # 2) Forward + backward
-            loss_1 = criterion(model(x_1), y_1)  # Compute loss on next batch
             loss = criterion(model(x), y)
-            self.manual_backward(loss)  # Compute gradients
+            # prefer lightning’s manual backward if available
+            if hasattr(model, "manual_backward"):
+                model.manual_backward(loss)
+            else:
+                loss.backward()  # Compute gradients
             # ————————————————————————————————
             # Manually update the parameters
             for param in model.parameters():
@@ -66,20 +85,20 @@ class Linearizer:
             # ————————————————————————————————
             # 3) Probe perturbed network
             perturbed_loss = criterion(model(x), y)
-            perturbed_loss_1 = criterion(model(x_1), y_1)
         except Exception as e:
             # If an error occurs, we still want to restore the model state
             print(f"Error during probing step: {e}")
             perturbed_loss = None
-            perturbed_loss_1 = None
             loss = None
-            loss_1 = None
         finally:
             # ————————————————————————————————
             # 4) Restore everything (even if an error occurred)
             # 4a. Model weights & buffers
             buf = io.BytesIO(orig_model_state)
-            model.load_state_dict(torch.load(buf))
+            # ensure tensors map to the model device
+            map_loc = device if device is not None else None
+            state = torch.load(buf, map_location=map_loc)
+            model.load_state_dict(state)
             # 4b. Scheduler state
             if scheduler is not None:
                 scheduler.load_state_dict(orig_sched_state)
@@ -90,7 +109,7 @@ class Linearizer:
                 model.train()
             else:
                 model.eval()
-        return (loss, perturbed_loss), (loss_1, perturbed_loss_1)
+        return (loss, perturbed_loss)  # type: ignore
 
 
 def set_track_running_stats(model, track=True):

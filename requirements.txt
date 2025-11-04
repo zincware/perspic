@@ -1,0 +1,5 @@
+pytest==8.4.2
+pytorch_lightning==2.5.5
+setuptools==80.9.0
+torch==2.8.0
+nngeometry==0.3.2

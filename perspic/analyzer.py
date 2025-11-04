@@ -1,11 +1,13 @@
 import torch
 from torch import nn
 import pytorch_lightning as pl
-from calculator.samplewise import (
+from perspic.calculator.samplewise import (
     SamplewiseCalculatorFunctorch,
     SamplewiseCalculatorOpacus,
 )
-from calculator.linearizer import Linearizer
+from perspic.calculator.linearizer import Linearizer
+from typing import Optional
+from lightning_fabric.utilities.types import _PATH
 
 
 pl.seed_everything(42)
@@ -27,17 +29,15 @@ class Analyzer(pl.LightningModule):
     def __init__(
         self,
         model,
-        optimizer=None,
-        criterion=None,
-        data_loader=None,
+        optimizer,
+        criterion,
+        data_loader,
         sample_wise_engine: str = "functorch",
     ):
         super().__init__()
         self.model = model
-        self.optimizer = optimizer
         self.criterion = criterion
         self.data_loader = data_loader
-        self.sample_calc = None
         self.sample_wise_engine = sample_wise_engine
 
         # Turn off automatic optimization to handle optimizer steps manually
@@ -53,15 +53,24 @@ class Analyzer(pl.LightningModule):
         elif sample_wise_engine == "opacus":
             self.sample_calc = SamplewiseCalculatorOpacus()
             # get wrapped components with _get_wrappings and set them as
-            # new self.model etc
+            # new self.model etc.
 
         self.linearizer = Linearizer()
+
+        # Set up optimizer
+        self.optimizer = optimizer
+        # Trainer check flag (must happen on first training step)
+        self._check_trainer_on_first_step = True
 
     def forward(self, x):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        opt = self.optimizers()
+        # One-time checks on first step (only gets called with fit())
+        if self._check_trainer_on_first_step:
+            self._first_step_checks()
+
+        opt = self.optimizer
         opt.zero_grad()
         inputs, targets = batch
         outputs = self.model(inputs)
@@ -69,26 +78,50 @@ class Analyzer(pl.LightningModule):
 
         # Compute samplewise metrics
         samples_results = self.sample_calc.compute(
-            self.model,
-            self.criterion,
-            inputs,
-            targets
+            self.model, self.criterion, inputs, targets
         )
 
-        # Use _backward_pass to handle different engines in the future
-        self.manual_backward(loss)  # or loss.backward
+        probe_results = self.linearizer.probe_train_step(
+            model=self.model,
+            criterion=self.criterion,
+            x=inputs,
+            y=targets,
+            eta=1e-5,
+        )
+
+        # Use standard backward when no trainer, manual_backward with trainer
+        if self._trainer_attached:
+            self.manual_backward(loss)
+        else:
+            loss.backward()
+
         opt.step()
 
         # log block
-        self.log("train_acc",
-                 (outputs.argmax(dim=1) == targets).float().mean())
+        acc = (outputs.argmax(dim=1) == targets).float().mean()
+        self.log("train_acc", acc)
         self.log("train_loss", loss)
-        self.log("per_sample_grad_norms",
-                 samples_results["per_sample_grad_norms_network"])
-        self.log("per_sample_grad_norms_loss",
-                 samples_results["per_sample_grad_norms_loss"])
-
+        self.log(
+            "batch_grad_norms_network",
+            samples_results["batch_grad_norms_network"],
+        )
+        self.log(
+            "batch_grad_norms_loss",
+            samples_results["batch_grad_norms_loss"],
+        )
+        self.log("loss_value", probe_results[0])
+        self.log("perturbed_loss_value", probe_results[1])
+        self.log("actual_batch_size", inputs.shape[0])
         return None
+
+    def _first_step_checks(self):
+        """Perform one-time checks on the first training step."""
+        # Check if trainer is attached
+        trainer_obj = self.__dict__.get("trainer", None) or self.__dict__.get(
+            "_trainer", None
+        )
+        self._trainer_attached = trainer_obj is not None
+        self._check_trainer_on_first_step = False
 
     def _backward_pass(self, loss):
         """Handle backward pass based on the samplewise engine."""
@@ -99,12 +132,17 @@ class Analyzer(pl.LightningModule):
             "functorch": lambda: self.manual_backward(loss),
         }
 
-        method = backward_methods.get(self.samplewise_calculator.method)
+        # Use the configured sample-wise engine string to select the method.
+        engine_key = getattr(self, "sample_wise_engine", None)
+        method = backward_methods.get(engine_key) if engine_key else None
         if method:
             method()
         else:
-            # Default fallback
-            loss.backward()
+            # Default fallback: prefer trainer-aware manual backward if availb
+            if getattr(self, "_trainer_attached", False):
+                self.manual_backward(loss)
+            else:
+                loss.backward()
 
     def configure_optimizers(self):
         return self.optimizer
@@ -116,17 +154,32 @@ class Analyzer(pl.LightningModule):
 
 
 class PerspicTrainer(pl.Trainer):
-    def __init__(self, analyzer=None, *args, **kwargs):
-        # Extract analyzer from kwargs before passing to parent
+    def __init__(self, analyzer: "pl.LightningModule", **kwargs):
+        super().__init__(**kwargs)
         self.analyzer = analyzer
-        super().__init__(*args, **kwargs)
-        # Custom initialization for PerspicTrainer can be added here
 
-    def fit(self, model=None, **kwargs):
-        # If no model is provided, use the stored analyzer
+    def fit(
+        self,
+        model=None,
+        train_dataloaders=None,
+        val_dataloaders=None,
+        datamodule=None,
+        ckpt_path: Optional[_PATH] = None,
+    ) -> None:
+        """Override fit to use stored analyzer if no model provided."""
+        model = self.analyzer
+
+        # Validate model is not None before calling super
         if model is None:
-            model = self.analyzer
-        return super().fit(model, **kwargs)
+            raise ValueError("no analyzer stored in trainer")
+
+        super().fit(
+            model,
+            train_dataloaders,
+            val_dataloaders,
+            datamodule,
+            ckpt_path,
+        )
 
 
 if __name__ == "__main__":
@@ -134,6 +187,7 @@ if __name__ == "__main__":
     model = nn.Linear(10, 2)
     x, y = torch.randn(32, 10), torch.randint(0, 2, (32,))
     from torch.utils.data import DataLoader, TensorDataset
+
     data_loader = DataLoader(TensorDataset(x, y), batch_size=8)
 
     analyzer = Analyzer(
