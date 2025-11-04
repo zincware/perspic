@@ -81,6 +81,7 @@ class Analyzer(pl.LightningModule):
             self.model, self.criterion, inputs, targets
         )
 
+        # Linearizer probe
         probe_results = self.linearizer.probe_train_step(
             model=self.model,
             criterion=self.criterion,
@@ -90,6 +91,7 @@ class Analyzer(pl.LightningModule):
         )
 
         # Use standard backward when no trainer, manual_backward with trainer
+        # TODO: maybe use _backward_pass method here instead?
         if self._trainer_attached:
             self.manual_backward(loss)
         else:
@@ -115,7 +117,10 @@ class Analyzer(pl.LightningModule):
         return None
 
     def _first_step_checks(self):
-        """Perform one-time checks on the first training step."""
+        """
+        Perform one-time checks on the first training step.
+        -> see if trainer is attached
+        """
         # Check if trainer is attached
         trainer_obj = self.__dict__.get("trainer", None) or self.__dict__.get(
             "_trainer", None
@@ -154,6 +159,12 @@ class Analyzer(pl.LightningModule):
 
 
 class PerspicTrainer(pl.Trainer):
+    """
+    Custom Trainer to work with Analyzer LightningModule.
+    should be used like:
+        trainer = PerspicTrainer(analyzer=analyzer, **trainer_kwargs)
+        trainer.fit()
+    """
     def __init__(self, analyzer: "pl.LightningModule", **kwargs):
         super().__init__(**kwargs)
         self.analyzer = analyzer

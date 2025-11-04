@@ -32,6 +32,10 @@ class SamplewiseCalculatorFunctorch:
                 model, loss_fn, inputs, targets
             )
         )
+
+        # Restore the track_running_stats to True for BatchNorm layers
+        # TODO: write test to verify this works correctly
+        self.model = self.set_track_running_stats(self.model, track=True)
         return {
             "batch_grad_norms_network": batch_grad_norms_network,
             "batch_grad_norms_loss": batch_grad_norms_loss,
