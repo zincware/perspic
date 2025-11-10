@@ -5,18 +5,9 @@ from typing import Tuple
 
 
 class Linearizer:
-    def __init__(self):
-        pass
-
-    def calculate_virtual_step(self, *args, **kwargs):
-        # needs:
-        # its own optimizer
-        # zero-grad before step
-        # step
-        # scheduler
-        # restore
-        pass
-
+    """
+    Class to perform a probe training step on a model.
+    """
     def probe_train_step(
         self,
         model,
