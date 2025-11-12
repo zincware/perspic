@@ -2,8 +2,7 @@ import torch
 from torch import nn
 import pytorch_lightning as pl
 from perspic.calculator.samplewise import (
-    SamplewiseCalculatorFunctorch,
-    SamplewiseCalculatorOpacus,
+    SamplewiseCalculatorFunctorch
 )
 from perspic.calculator.linearizer import Linearizer
 from typing import Optional
@@ -51,9 +50,9 @@ class Analyzer(pl.LightningModule):
         if sample_wise_engine == "functorch":
             self.sample_calc = SamplewiseCalculatorFunctorch()
         elif sample_wise_engine == "opacus":
-            self.sample_calc = SamplewiseCalculatorOpacus()
-            # get wrapped components with _get_wrappings and set them as
-            # new self.model etc.
+            raise NotImplementedError(
+                "sample_wise_engine='opacus' is not supported yet."
+            )
 
         self.linearizer = Linearizer()
 
