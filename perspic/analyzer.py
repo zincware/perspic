@@ -1,15 +1,12 @@
-import torch
-from torch import nn
-import pytorch_lightning as pl
-from perspic.calculator.samplewise import (
-    SamplewiseCalculatorFunctorch
-)
-from perspic.calculator.linearizer import Linearizer
 from typing import Optional
+
+import pytorch_lightning as pl
+import torch
 from lightning_fabric.utilities.types import _PATH
+from torch import nn
 
-
-pl.seed_everything(42)
+from perspic.calculator.linearizer import Linearizer
+from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
 
 
 class Analyzer(pl.LightningModule):
@@ -164,6 +161,7 @@ class PerspicTrainer(pl.Trainer):
         trainer = PerspicTrainer(analyzer=analyzer, **trainer_kwargs)
         trainer.fit()
     """
+
     def __init__(self, analyzer: "pl.LightningModule", **kwargs):
         super().__init__(**kwargs)
         self.analyzer = analyzer
@@ -207,7 +205,7 @@ if __name__ == "__main__":
         data_loader=data_loader,
         sample_wise_engine="functorch",
     )
-    trainer = PerspicTrainer(analyzer=analyzer,
-                             max_epochs=5,
-                             log_every_n_steps=1)
+    trainer = PerspicTrainer(
+        analyzer=analyzer, max_epochs=5, log_every_n_steps=1
+    )  # noqa: E501
     trainer.fit()

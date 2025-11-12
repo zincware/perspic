@@ -1,7 +1,9 @@
-import torch.nn as nn
+from typing import Dict
+
 import torch
 import torch.func as func
-from typing import Dict
+import torch.nn as nn
+
 from perspic.utils import set_track_running_stats
 
 
@@ -24,19 +26,21 @@ class SamplewiseCalculatorFunctorch:
         """
         # Set track_running_stats to False for BatchNorm layers to only update
         # on the current batch
-        self.model = set_track_running_stats(self.model, False)
+        model = set_track_running_stats(model, False)
         batch_grad_norms_network = (
-            self._compute_per_sample_gradient_norm_network(model, inputs)
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                model, inputs
+            )
         )
         batch_grad_norms_loss = (
-            self._compute_per_sample_gradient_norm_loss(
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_loss(
                 model, loss_fn, inputs, targets
             )
         )
 
         # Restore the track_running_stats to True for BatchNorm layers
         # TODO: write test to verify this works correctly
-        self.model = set_track_running_stats(self.model, track=True)
+        model = set_track_running_stats(model, track=True)
         return {
             "batch_grad_norms_network": batch_grad_norms_network,
             "batch_grad_norms_loss": batch_grad_norms_loss,
@@ -68,10 +72,8 @@ class SamplewiseCalculatorFunctorch:
         """
         # All samples simultaneously
         inputs = inputs.unsqueeze(1)  # Due to vmap
-        per_sample_grads = (
-            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_network_sum(  # noqa: E501
-                model, inputs
-            )
+        per_sample_grads = SamplewiseCalculatorFunctorch._compute_per_sample_gradient_network_sum(
+            model, inputs
         )
         # Assert the correct shape of the gradients
         # (batch_size, ...)
@@ -80,14 +82,11 @@ class SamplewiseCalculatorFunctorch:
             # Assert that the first dimension is the batch size
             assert v.shape[0] == inputs.shape[0]
             # Assert that the v.shape[1:] matches the shape of the parameter
-            assert v.shape[-len(params[k].shape):] == params[k].shape
+            assert v.shape[-len(params[k].shape) :] == params[k].shape
 
         # Compute per-sample gradient magnitude (L2 norm)
         per_sample_grad_magnitudes = torch.stack(
-            [
-                (g**2).sum(dim=tuple(range(1, g.ndim)))
-                for g in per_sample_grads.values()
-            ]
+            [(g**2).sum(dim=tuple(range(1, g.ndim))) for g in per_sample_grads.values()]
         ).sum(
             dim=0
         )  # Sum across parameters
@@ -113,9 +112,7 @@ class SamplewiseCalculatorFunctorch:
         return per_sample_loss_grads  # type: ignore
 
     @staticmethod
-    def _compute_per_sample_gradient_norm_loss(
-        model, loss_fn, inputs, targets
-    ):
+    def _compute_per_sample_gradient_norm_loss(model, loss_fn, inputs, targets):
         """
         Compute per-sample gradient magnitudes for the loss function L(f(x), y)
         using functorch. -> ∇_f L
