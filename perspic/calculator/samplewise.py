@@ -27,15 +27,11 @@ class SamplewiseCalculatorFunctorch:
         # Set track_running_stats to False for BatchNorm layers to only update
         # on the current batch
         model = set_track_running_stats(model, False)
-        batch_grad_norms_network = (
-            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
-                model, inputs
-            )
+        batch_grad_norms_network = SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(  # noqa: E501
+            model, inputs
         )
-        batch_grad_norms_loss = (
-            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_loss(
-                model, loss_fn, inputs, targets
-            )
+        batch_grad_norms_loss = SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_loss(  # noqa: E501
+            model, loss_fn, inputs, targets
         )
 
         # Restore the track_running_stats to True for BatchNorm layers
@@ -72,7 +68,7 @@ class SamplewiseCalculatorFunctorch:
         """
         # All samples simultaneously
         inputs = inputs.unsqueeze(1)  # Due to vmap
-        per_sample_grads = SamplewiseCalculatorFunctorch._compute_per_sample_gradient_network_sum(
+        per_sample_grads = SamplewiseCalculatorFunctorch._compute_per_sample_gradient_network_sum(  # noqa: E501
             model, inputs
         )
         # Assert the correct shape of the gradients
@@ -83,10 +79,12 @@ class SamplewiseCalculatorFunctorch:
             assert v.shape[0] == inputs.shape[0]
             # Assert that the v.shape[1:] matches the shape of the parameter
             assert v.shape[-len(params[k].shape) :] == params[k].shape
-
         # Compute per-sample gradient magnitude (L2 norm)
         per_sample_grad_magnitudes = torch.stack(
-            [(g**2).sum(dim=tuple(range(1, g.ndim))) for g in per_sample_grads.values()]
+            [
+                (g**2).sum(dim=tuple(range(1, g.ndim)))
+                for g in per_sample_grads.values()
+            ]  # noqa: E501
         ).sum(
             dim=0
         )  # Sum across parameters
@@ -112,7 +110,9 @@ class SamplewiseCalculatorFunctorch:
         return per_sample_loss_grads  # type: ignore
 
     @staticmethod
-    def _compute_per_sample_gradient_norm_loss(model, loss_fn, inputs, targets):
+    def _compute_per_sample_gradient_norm_loss(
+        model, loss_fn, inputs, targets
+    ):  # noqa: E501
         """
         Compute per-sample gradient magnitudes for the loss function L(f(x), y)
         using functorch. -> ∇_f L
