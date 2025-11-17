@@ -1,157 +1,194 @@
+import warnings
 from typing import Optional
 
 import pytorch_lightning as pl
 
-
-import pytorch_lightning as pl
-import torch
-from lightning_fabric.utilities.types import _PATH
-from torch import nn
-
-
 from perspic.calculator.linearizer import Linearizer
 from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
 
-pl.seed_everything(42)
 
+def analyzer(
+    lignting_module: pl.LightningModule,
+    sample_wise_engine: Optional[str] = "functorch",
+    **model_kwargs
+):
+    """Factory function that wraps a LightningModule with analysis capabilities.
 
-class Analyzer(pl.LightningModule):
-    """
-    A wrapper around a PyTorch Lightning model to add analysis capabilities.
-    This class wraps an existing LightningModule and adds functionality to compute
-    samplewise gradients and linearizer probes to compute Collective Variables (CVs)
-    during training.
+    This function creates an Analyzer class that inherits from the provided
+    LightningModule and adds functionality for computing sample-wise gradients
+    and probing linearization properties during training.
 
     Args:
-        model (pl.LightningModule): The original LightningModule to be wrapped.
-        sample_wise_engine (str): The engine to use for samplewise gradient computation.
-            Options are "functorch" or "opacus". Default is "functorch".
+        lignting_module: A PyTorch Lightning module class to wrap with
+            analysis features.
+        sample_wise_engine: Engine for computing sample-wise gradients.
+            Options: 'functorch' or 'opacus'. Defaults to 'functorch'.
+        **model_kwargs: Additional keyword arguments passed to the
+            LightningModule constructor.
+
+    Returns:
+        An initialized Analyzer instance that wraps the provided
+        LightningModule.
+
+    Raises:
+        ValueError: If sample_wise_engine is not 'functorch' or 'opacus'.
+        AttributeError: If the wrapped module doesn't have a 'criterion'
+            attribute.
+        NotImplementedError: If sample_wise_engine='opacus' is selected
+            (not yet supported).
     """
 
-    def __init__(
-        self, model: pl.LightningModule, sample_wise_engine: str = "functorch"
-    ):
-        super().__init__()
+    class Analyzer(lignting_module):
+        """Analyzer wrapper that extends a LightningModule with analysis.
 
-        # Store the original model
-        self.model = model
-        
-        # Store the samplewise engine choice
-        self.sample_wise_engine = sample_wise_engine
+        This class dynamically inherits from the provided LightningModule and
+        overrides the training_step to add:
+        - Sample-wise gradient computation before each training step
+        - Linearization probing for model analysis
+        - Manual optimization control to support custom analysis workflows
 
-        # Check if the model's training_step uses manual optimization
-        if not model.automatic_optimization:
-            raise Warning(
-                "The wrapped model uses manual optimization. "
-                "Gradient Updates will be delegated to the the wrapped model's training_step."
+        The wrapped module must have a 'criterion' attribute for loss
+        computation.
+
+        Attributes:
+            sample_calc: Calculator for computing sample-wise gradients and
+                metrics.
+            linearizer: Linearizer for probing model linearization properties.
+            delegate_optimization: Whether to delegate optimization to the
+                wrapped model.
+        """
+
+        def __init__(self, sample_wise_engine=sample_wise_engine, **model_kwargs):
+            super().__init__(**model_kwargs)
+
+            # Store analyzer-specific parameters
+            if sample_wise_engine not in ["opacus", "functorch"]:
+                raise ValueError(
+                    "sample_wise_engine must be either 'opacus' or 'functorch'"
+                )
+
+            if sample_wise_engine == "functorch":
+                self.sample_calc = SamplewiseCalculatorFunctorch()
+            elif sample_wise_engine == "opacus":
+                raise NotImplementedError(
+                    "sample_wise_engine='opacus' is not supported yet."
+                )
+
+            self.linearizer = Linearizer()
+
+            # Use manual optimization to control optimization steps
+            if not self.automatic_optimization:
+                warnings.warn(
+                    "The wrapped model uses manual optimization. "
+                    "Gradient Updates will be delegated to the the wrapped model's "
+                    "training_step."
+                )
+                self.delegate_optimization = True
+            else:
+                self.delegate_optimization = False
+            self.automatic_optimization = False  # We handle optimization manually
+
+            # Check if model has criterion attribute
+            if not hasattr(self, "criterion"):
+                raise AttributeError(
+                    "The wrapped model must have a 'criterion' attribute for loss computation."
+                )
+
+        def training_step(self, batch, batch_idx):
+            """Training step wrapper that adds sample-wise analysis.
+
+            Performs analysis before and after the wrapped module's training
+            step:
+            1. Computes sample-wise gradients and metrics
+            2. Probes linearization properties
+            3. Executes the original training step
+            4. Handles optimization (unless delegated to wrapped model)
+
+            Args:
+                batch: Training batch containing input data and labels.
+                batch_idx: Index of the current batch.
+
+            Returns:
+                Output from the wrapped module's training_step.
+            """
+            # Initializing manual optimization
+            opt = self.optimizers()
+            opt.zero_grad()
+
+            # BEFORE logic
+            self._before_training_step(batch, batch_idx)
+
+            # Original training step
+            output = super().training_step(batch, batch_idx)
+            if not self.delegate_optimization:
+                # Backward pass
+                self.manual_backward(output)
+                # Optimizer step
+                opt.step()
+
+            # AFTER logic
+            self._after_training_step(batch, batch_idx, output)
+
+            return output
+
+        def _before_training_step(self, batch, batch_idx):
+            """Hook executed before the wrapped training step.
+
+            Computes analysis metrics including sample-wise gradients and
+            linearization probes.
+
+            Args:
+                batch: Training batch containing input data and labels.
+                batch_idx: Index of the current batch.
+
+            Returns:
+                Tuple of (samples_results, probe_results) containing computed
+                metrics.
+            """
+            x, y = batch
+
+            # Compute samplewise metrics
+            samples_results = self.sample_calc.compute(
+                self.model,
+                self.criterion,
+                x,
+                y,
             )
-            self.delegate_optimization = True
-        else:
-            self.delegate_optimization = False
-        self.automatic_optimization = False  # We handle optimization manually
 
-        # Initialize calculators
-        if sample_wise_engine == "functorch":
-            self.sample_calc = SamplewiseCalculatorFunctorch()
-        elif sample_wise_engine == "opacus":
-            self.sample_calc = SamplewiseCalculatorOpacus()
-        else:
-            raise ValueError(
-                "sample_wise_engine must be either 'opacus' or 'functorch'"
+            # Linearizer probe
+            probe_results = self.linearizer.probe_train_step(
+                model=self.model,
+                criterion=self.criterion,
+                x=x,
+                y=y,
+                eta=1e-5,
             )
 
-        self.linearizer = Linearizer()
-
-        # Copy hyperparameters from original model
-        if hasattr(model, "hparams"):
-            self.save_hyperparameters(dict(model.hparams))
-
-    def forward(self, x):
-        """Delegate forward to the wrapped model."""
-        return self.model(x)
-
-    def training_step(self, batch, batch_idx):
-        """Wrapped training step with monitoring."""
-        opt = self.optimizers()
-        opt.zero_grad()
-
-        # --- BEFORE: Compute samplewise metrics and linearizer probe ---
-        x, y = batch
-
-        # Compute samplewise metrics
-        samples_results = self.sample_calc.compute(
-            self.model, 
-            self.model.criterion if hasattr(self.model, "criterion") else None,
-            x,
-            y,
-        )
-
-        # Linearizer probe
-        probe_results = self.linearizer.probe_train_step(
-            model=self.model,
-            criterion=(
-                self.model.criterion if hasattr(self.model, "criterion") else None
-            ),
-            x=x,
-            y=y,
-            eta=1e-5,
-        )
-
-        # --- CORE: Original training step ---
-        original_loss = self.model.training_step(batch, batch_idx)
-
-        if not self.delegate_optimization:
-            # Backward pass
-            self.manual_backward(original_loss)
-            # Optimizer step
-            opt.step()
-
-        # --- AFTER: Log computed metrics ---
-        self.log(
-            "batch_grad_norms_network", samples_results["batch_grad_norms_network"]
-        )
-        self.log("batch_grad_norms_loss", samples_results["batch_grad_norms_loss"])
-        self.log("loss_value", probe_results[0])
-        self.log("perturbed_loss_value", probe_results[1])
-
-        return original_loss
-
-    def validation_step(self, batch, batch_idx):
-        """Delegate validation to wrapped model."""
-        return self.model.validation_step(batch, batch_idx)
-
-    def test_step(self, batch, batch_idx):
-        """Delegate test to wrapped model."""
-        return self.model.test_step(batch, batch_idx)
-
-    def configure_optimizers(self):
-        """Delegate optimizer configuration to wrapped model."""
-        return self.model.configure_optimizers()
-    
-    def __getattr__(self, name):
-        """Fallback: delegate any other methods to wrapped model."""
-        try:
-            return getattr(self.model, name)
-        except AttributeError:
-            raise AttributeError(
-                f"'{type(self).__name__}' object has no attribute '{name}'"
+            # Log results
+            self.log(
+                "batch_grad_norms_network",
+                samples_results["batch_grad_norms_network"],
             )
+            self.log(
+                "batch_grad_norms_loss",
+                samples_results["batch_grad_norms_loss"],
+            )
+            self.log("loss_value", probe_results[0])
+            self.log("perturbed_loss_value", probe_results[1])
+            self.log("actual_batch_size", x.shape[0])
 
+            return None
 
-if __name__ == "__main__":
-    # Example usage
-    model = nn.Linear(10, 2)
-    x, y = torch.randn(32, 10), torch.randint(0, 2, (32,))
-    from torch.utils.data import DataLoader, TensorDataset
+        def _after_training_step(self, batch, batch_idx, output):
+            """Hook executed after the wrapped training step.
 
-    data_loader = DataLoader(TensorDataset(x, y), batch_size=8)
+            Placeholder for post-training step analysis logic.
 
-    analyzer = Analyzer(
-        model=model,
-        optimizer=torch.optim.SGD(model.parameters(), lr=0.01),
-        criterion=nn.CrossEntropyLoss(),
-        data_loader=data_loader,
-        sample_wise_engine="functorch",
-    )
-    trainer = PerspicTrainer(analyzer=analyzer, max_epochs=5, log_every_n_steps=1)
-    trainer.fit()
+            Args:
+                batch: Training batch containing input data and labels.
+                batch_idx: Index of the current batch.
+                output: Output from the wrapped module's training_step.
+            """
+            pass
+
+    return Analyzer(sample_wise_engine=sample_wise_engine, **model_kwargs)
