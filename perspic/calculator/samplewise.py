@@ -4,7 +4,11 @@ import torch
 import torch.func as func
 import torch.nn as nn
 
-from perspic.utils import set_track_running_stats
+from perspic.utils import (
+    restore_bn_track_states,
+    save_bn_track_states,
+    set_track_running_states,
+)
 
 
 class SamplewiseCalculatorFunctorch:
@@ -24,19 +28,24 @@ class SamplewiseCalculatorFunctorch:
         Compute per-sample gradient norms for both the network parameters and
         the loss function using functorch.
         """
-        # Set track_running_stats to False for BatchNorm layers to only update
+        # Set track_running_states to False for BatchNorm layers to only update
         # on the current batch
-        model = set_track_running_stats(model, False)
-        batch_grad_norms_network = SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(  # noqa: E501
-            model, inputs
+        bn_track_states = save_bn_track_states(model)
+        model = set_track_running_states(model, False)
+        batch_grad_norms_network = (
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                model, inputs
+            )
         )
-        batch_grad_norms_loss = SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_loss(  # noqa: E501
-            model, loss_fn, inputs, targets
+        batch_grad_norms_loss = (
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_loss(
+                model, loss_fn, inputs, targets
+            )
         )
 
-        # Restore the track_running_stats to True for BatchNorm layers
+        # Restore the track_running_states to True for BatchNorm layers
         # TODO: write test to verify this works correctly
-        model = set_track_running_stats(model, track=True)
+        restore_bn_track_states(bn_track_states)
         return {
             "batch_grad_norms_network": batch_grad_norms_network,
             "batch_grad_norms_loss": batch_grad_norms_loss,
@@ -110,9 +119,7 @@ class SamplewiseCalculatorFunctorch:
         return per_sample_loss_grads  # type: ignore
 
     @staticmethod
-    def _compute_per_sample_gradient_norm_loss(
-        model, loss_fn, inputs, targets
-    ):  # noqa: E501
+    def _compute_per_sample_gradient_norm_loss(model, loss_fn, inputs, targets):
         """
         Compute per-sample gradient magnitudes for the loss function L(f(x), y)
         using functorch. -> ∇_f L

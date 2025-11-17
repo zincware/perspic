@@ -4,7 +4,11 @@ from typing import Tuple
 
 import torch
 
-from perspic.utils import set_track_running_stats
+from perspic.utils import (
+    restore_bn_track_states,
+    save_bn_track_states,
+    set_track_running_states,
+)
 
 
 class Linearizer:
@@ -47,7 +51,8 @@ class Linearizer:
             orig_sched_state = copy.deepcopy(scheduler.state_dict())
         # 1c. Train/eval mode
         orig_mode = model.training
-        model = set_track_running_stats(
+        bn_track_states = save_bn_track_states(model)
+        model = set_track_running_states(
             model, track=False
         )  # Only use current batch stats
         model.train()  # still uses batch‐stats, but buffers won’t update
@@ -79,6 +84,7 @@ class Linearizer:
             # 3) Probe perturbed network
             perturbed_loss = criterion(model(x), y)
         except Exception as e:
+            # TODO: add logger warning here (when logger is available)
             # If an error occurs, we still want to restore the model state
             print(f"Error during probing step: {e}")
             perturbed_loss = None
@@ -96,7 +102,7 @@ class Linearizer:
             if scheduler is not None:
                 scheduler.load_state_dict(orig_sched_state)
             # restore_bn_momentum(bn_layers)
-            model = set_track_running_stats(model, track=True)
+            restore_bn_track_states(bn_track_states)
             # 4c. Restore train/eval mode
             if orig_mode:
                 model.train()
