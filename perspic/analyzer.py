@@ -1,13 +1,16 @@
 from typing import Optional
 
 import pytorch_lightning as pl
+
+
+import pytorch_lightning as pl
 import torch
 from lightning_fabric.utilities.types import _PATH
 from torch import nn
 
+
 from perspic.calculator.linearizer import Linearizer
-from perspic.calculator.samplewise import (SamplewiseCalculatorFunctorch,
-                                           SamplewiseCalculatorOpacus)
+from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
 
 pl.seed_everything(42)
 

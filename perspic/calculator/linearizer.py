@@ -1,13 +1,17 @@
-import io
 import copy
-import torch
+import io
 from typing import Tuple
+
+import torch
+
+from perspic.utils import set_track_running_stats
 
 
 class Linearizer:
     """
     Class to perform a probe training step on a model.
     """
+
     def probe_train_step(
         self,
         model,
@@ -16,9 +20,7 @@ class Linearizer:
         y,
         eta,
         scheduler=None,
-    ) -> Tuple[
-        torch.Tensor, torch.Tensor
-    ]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Perform a tiny optimizer step (η) using batch-stats but zero-momentum,
         then undo everything.
@@ -29,7 +31,7 @@ class Linearizer:
             eta        : small learning rate, e.g. 1e-5
             scheduler  : optional lr-scheduler (snapshot & restore if provided)
         Returns:
-            logits, perturbed_logits, loss_value
+            logits, loss_value
         """
         # ————————————————————————————————
         # 1) Snapshot states
@@ -101,18 +103,3 @@ class Linearizer:
             else:
                 model.eval()
         return (loss, perturbed_loss)  # type: ignore
-
-
-def set_track_running_stats(model, track=True):
-    """
-    Recursively set track_running_stats for all BatchNorm layers in the model.
-    Args:
-        model : nn.Module
-        track : bool, whether to track running stats or not
-    Returns:
-        model with updated BatchNorm layers
-    """
-    for module in model.modules():
-        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-            module.track_running_stats = track
-    return model
