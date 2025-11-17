@@ -44,9 +44,7 @@ class TestTraceComputation:
         )
         K = GramMatrix(model=model, loader=loader)
         kernel = K.get_dense_tensor()
-        matrix_kernel = kernel.reshape(
-            batch_size * output_dim, batch_size * output_dim
-        )
+        matrix_kernel = kernel.reshape(batch_size * output_dim, batch_size * output_dim)
         trace = torch.trace(matrix_kernel)
         return trace
 
@@ -54,9 +52,7 @@ class TestTraceComputation:
     def _compute_grad_norms(model, inputs):
         """Compute per-sample gradient norms."""
         calculator = SamplewiseCalculatorFunctorch()
-        return calculator._compute_per_sample_gradient_norm_network(
-            model, inputs
-        )
+        return calculator._compute_per_sample_gradient_norm_network(model, inputs)
 
     @staticmethod
     def _compute_loss_grad_norms(model, loss_fn, inputs, targets):
@@ -77,10 +73,10 @@ class TestTraceComputation:
     @pytest.mark.parametrize(
         "output_dim,sum_output,n_hidden,expected_output_dim",
         [
-            (1, False, 10, 1),    # test_trace_computation_1
-            (2, True, 10, 1),     # test_trace_computation_2
-            (2, False, 10, 2),    # test_trace_computation_3
-            (2, False, 100, 2),   # test_trace_computation_4
+            (1, False, 10, 1),  # test_trace_computation_1
+            (2, True, 10, 1),  # test_trace_computation_2
+            (2, False, 10, 2),  # test_trace_computation_3
+            (2, False, 100, 2),  # test_trace_computation_4
         ],
     )
     def test_trace_computation(
@@ -100,18 +96,17 @@ class TestTraceComputation:
         X = torch.randn(100, 10)
 
         grad_norms_network = self._compute_grad_norms(model, X)
-        trace = self._compute_with_nngeometry(
-            model, X, expected_output_dim
-        )
+        trace = self._compute_with_nngeometry(model, X, expected_output_dim)
         assert torch.allclose(grad_norms_network, trace)
 
     @pytest.mark.parametrize(
         "output_dim,sum_output,n_hidden",
         [
-            (1, False, 10),    # test_loss_gradient_norm_computation_1
-            (2, True, 10),     # test_loss_gradient_norm_computation_2
-            (2, False, 10),    # test_loss_gradient_norm_computation_3
-            (2, False, 100),   # test_loss_gradient_norm_computation_4
+            (1, False, 10),  # test_loss_gradient_norm_computation_1
+            (2, True, 10),  # test_loss_gradient_norm_computation_2
+            (2, False, 10),  # test_loss_gradient_norm_computation_3
+            (2, False, 100),  # test_loss_gradient_norm_computation_4
+            (5, False, 50),  # test_loss_gradient_norm_computation_5
         ],
     )
     def test_loss_gradient_norm_computation(
@@ -128,19 +123,22 @@ class TestTraceComputation:
             n_hidden=n_hidden,
         )
         X = torch.randn(100, 10)
-        # Create targets matching the output shape
+        # Create targets and loss matching the output shape
         if sum_output:
-            y = torch.randint(0, 2, (100,))  # Binary targets for summed output
-            loss_fn = nn.CrossEntropyLoss(reduction="mean")
+            # Scalar logit per sample -> use binary classification loss
+            y = torch.randint(0, 2, (100,), dtype=torch.float32)
+            loss_fn = nn.BCEWithLogitsLoss(reduction="mean")
+        elif output_dim == 1:
+            # Scalar logit per sample -> use regression loss
+            y = torch.randn(100, 1)
+            loss_fn = nn.BCEWithLogitsLoss(reduction="mean")
         else:
-            y = torch.randint(0, output_dim, (100,))  # Multi-class targets
+            # Multi-class logits with class dimension = output_dim
+            y = torch.randint(0, output_dim, (100,))
             loss_fn = nn.CrossEntropyLoss(reduction="mean")
 
         # Compute loss gradient norms
-        loss_grad_norms = self._compute_loss_grad_norms(
-            model, loss_fn, X, y
-        )
-
+        loss_grad_norms = self._compute_loss_grad_norms(model, loss_fn, X, y)
         # Basic sanity checks
         assert isinstance(loss_grad_norms, torch.Tensor)
         assert loss_grad_norms.ndim == 0  # Scalar
