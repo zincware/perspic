@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 
 from perspic.utils import (
-    set_track_running_states,
-    save_bn_track_states,
     restore_bn_track_states,
+    save_bn_track_states,
+    set_track_running_states,
 )
 
 
@@ -79,7 +79,9 @@ def sample_batch():
 
 
 def _bn_modules(model):
-    return [m for m in model.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    return [
+        m for m in model.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)
+    ]
 
 
 class TestBatchNormUtils:
