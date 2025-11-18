@@ -69,18 +69,18 @@ class BatchNormMLP(nn.Module):
     Architecture: Input (3072) -> 512 -> BN -> 256 -> BN -> Output (10)
     """
 
-    def __init__(self):
+    def __init__(self, width1=128, width2=128):
         super().__init__()
 
         self.flatten = nn.Flatten()
         self.model = nn.Sequential(
-            nn.Linear(32 * 32 * 3, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(32 * 32 * 3, width1),
+            nn.BatchNorm1d(width1),
             nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
+            nn.Linear(width1, width2),
+            nn.BatchNorm1d(width2),
             nn.ReLU(),
-            nn.Linear(256, 10),
+            nn.Linear(width2, 10),
         )
 
     def forward(self, x):
