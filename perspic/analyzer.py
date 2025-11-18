@@ -111,7 +111,7 @@ def analyzer(
             # Check if model has criterion attribute
             if not hasattr(self, "criterion"):
                 raise AttributeError(
-                    "The wrapped model must have a 'criterion' attribute for loss " \
+                    "The wrapped model must have a 'criterion' attribute for loss "
                     "computation."
                 )
 
