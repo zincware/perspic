@@ -10,6 +10,8 @@ from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
 def analyzer(
     lignting_module: pl.LightningModule,
     sample_wise_engine: Optional[str] = "functorch",
+    disable_analyzer: bool = False,
+    log_metrics: bool = True,
     **model_kwargs
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -23,6 +25,9 @@ def analyzer(
             analysis features.
         sample_wise_engine: Engine for computing sample-wise gradients.
             Options: 'functorch' or 'opacus'. Defaults to 'functorch'.
+        disable_analyzer: If True, wraps the module without adding analysis
+            capabilities. Defaults to False. Mainly for testing purposes.
+        log_metrics: If True, logs analysis metrics during training. Defaults to True.
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -36,6 +41,13 @@ def analyzer(
             attribute.
         NotImplementedError: If sample_wise_engine='opacus' is selected
             (not yet supported).
+
+    Note:
+        The lightning_module.__call__ method must contain the ENTIRE forward pass logic.
+        If there is any preprocessing (like flattening) it must be included in
+        model.__call__ and not just in the lightning_module.forward method.
+        The recommended practice is to implement all model logic in a separate nn.Module
+        class and use that inside the LightningModule.
     """
 
     class Analyzer(lignting_module):
@@ -58,7 +70,13 @@ def analyzer(
                 wrapped model.
         """
 
-        def __init__(self, sample_wise_engine=sample_wise_engine, **model_kwargs):
+        def __init__(
+            self,
+            sample_wise_engine=sample_wise_engine,
+            disable_analyzer=disable_analyzer,
+            log_metrics=log_metrics,
+            **model_kwargs
+        ):
             super().__init__(**model_kwargs)
 
             # Store analyzer-specific parameters
@@ -75,6 +93,8 @@ def analyzer(
                 )
 
             self.linearizer = Linearizer()
+            self.disable_analyzer = disable_analyzer
+            self.log_metrics = log_metrics
 
             # Use manual optimization to control optimization steps
             if not self.automatic_optimization:
@@ -91,7 +111,8 @@ def analyzer(
             # Check if model has criterion attribute
             if not hasattr(self, "criterion"):
                 raise AttributeError(
-                    "The wrapped model must have a 'criterion' attribute for loss computation."
+                    "The wrapped model must have a 'criterion' attribute for loss " \
+                    "computation."
                 )
 
         def training_step(self, batch, batch_idx):
@@ -116,7 +137,8 @@ def analyzer(
             opt.zero_grad()
 
             # BEFORE logic
-            self._before_training_step(batch, batch_idx)
+            if not self.disable_analyzer:
+                self._before_training_step(batch, batch_idx)
 
             # Original training step
             output = super().training_step(batch, batch_idx)
@@ -127,7 +149,8 @@ def analyzer(
                 opt.step()
 
             # AFTER logic
-            self._after_training_step(batch, batch_idx, output)
+            if not self.disable_analyzer:
+                self._after_training_step(batch, batch_idx, output)
 
             return output
 
@@ -165,17 +188,18 @@ def analyzer(
             )
 
             # Log results
-            self.log(
-                "batch_grad_norms_network",
-                samples_results["batch_grad_norms_network"],
-            )
-            self.log(
-                "batch_grad_norms_loss",
-                samples_results["batch_grad_norms_loss"],
-            )
-            self.log("loss_value", probe_results[0])
-            self.log("perturbed_loss_value", probe_results[1])
-            self.log("actual_batch_size", x.shape[0])
+            if self.log_metrics:
+                self.log(
+                    "batch_grad_norms_network",
+                    samples_results["batch_grad_norms_network"],
+                )
+                self.log(
+                    "batch_grad_norms_loss",
+                    samples_results["batch_grad_norms_loss"],
+                )
+                self.log("loss_value", probe_results[0])
+                self.log("perturbed_loss_value", probe_results[1])
+                self.log("actual_batch_size", x.shape[0])
 
             return None
 
