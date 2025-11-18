@@ -8,7 +8,7 @@ from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
 
 
 def analyzer(
-    lignting_module: pl.LightningModule,
+    lightning_module: pl.LightningModule,
     sample_wise_engine: Optional[str] = "functorch",
     disable_analyzer: bool = False,
     log_metrics: bool = True,
@@ -21,7 +21,7 @@ def analyzer(
     and probing linearization properties during training.
 
     Args:
-        lignting_module: A PyTorch Lightning module class to wrap with
+        lightning_module: A PyTorch Lightning module class to wrap with
             analysis features.
         sample_wise_engine: Engine for computing sample-wise gradients.
             Options: 'functorch' or 'opacus'. Defaults to 'functorch'.
@@ -50,7 +50,7 @@ def analyzer(
         class and use that inside the LightningModule.
     """
 
-    class Analyzer(lignting_module):
+    class Analyzer(lightning_module):
         """Analyzer wrapper that extends a LightningModule with analysis.
 
         This class dynamically inherits from the provided LightningModule and
