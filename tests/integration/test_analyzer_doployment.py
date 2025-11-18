@@ -535,7 +535,7 @@ class TestMemoryAndDevices:
         final_mem = memory_tracker.memory_usage[-1]
         mem_growth_mb = final_mem - initial_mem
 
-        # Memory should not grow more than 50MB over 45 steps
+        # Memory should not grow more than 1 MB over 45 steps
         assert mem_growth_mb < 1, (
             f"Memory leak detected: grew {mem_growth_mb:.2f} MB "
             f"from {initial_mem:.2f} MB to {final_mem:.2f} MB"
