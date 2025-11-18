@@ -14,5 +14,10 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Install dependencies
+        run: |
+          pip install -r dev-requirements.txt
+
       - name: Black Check
-        uses: psf/black@22.8.0
+        run: |
+          black --check .
