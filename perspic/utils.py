@@ -167,9 +167,11 @@ class BatchStatSnapshot:
                 # The effective N is the total number of values used to compute
                 # each feature's statistics during the forward pass.
                 if isinstance(module, nn.BatchNorm1d):
-                    # BatchNorm1d: variance over batch dimension only
+                    # BatchNorm1d: variance over batch dimension (and spatial if present)
                     # Input shape: (N, C) or (N, C, L)
                     effective_n = input_shape[0]
+                    if len(input_shape) > 2:  # Has spatial dimension L
+                        effective_n *= input_shape[2]
                 elif isinstance(module, nn.BatchNorm2d):
                     # BatchNorm2d: variance over batch + spatial dimensions
                     # Input shape: (N, C, H, W)
