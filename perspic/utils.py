@@ -184,8 +184,10 @@ class BatchStatSnapshot:
                         * input_shape[4]
                     )
 
-                correction_factor = effective_n / (effective_n - 1)
-                module.running_var.div_(correction_factor)
+                if effective_n > 1:
+                    correction_factor = effective_n / (effective_n - 1)
+                    module.running_var.div_(correction_factor)
+                # If effective_n == 1, skip correction to avoid division by zero.
 
         # 3. Switch to Eval mode
         # Now both running_mean and running_var (after correction) match what
