@@ -1,6 +1,6 @@
 """Unit tests for the analyzer module."""
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 import pytorch_lightning as pl

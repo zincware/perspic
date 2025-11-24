@@ -1,5 +1,5 @@
 isort>=7.0.0
-pytest>=8.4.2
+pytest==8.4.2
 black>=25.9.0
 flake8>=7.3.0
 pre_commit>=3.7.0

@@ -12,7 +12,8 @@ def analyzer(
     sample_wise_engine: Optional[str] = "functorch",
     disable_analyzer: bool = False,
     log_metrics: bool = True,
-    **model_kwargs
+    linearizing_lrs: list[float] = [1e-1, 1e-2, 1e-3, 1e-6],
+    **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
 
@@ -28,6 +29,8 @@ def analyzer(
         disable_analyzer: If True, wraps the module without adding analysis
             capabilities. Defaults to False. Mainly for testing purposes.
         log_metrics: If True, logs analysis metrics during training. Defaults to True.
+        linearizing_lrs: List of learning rates for linear probing steps. Defaults to
+            [1e-1, 1e-2, 1e-3, 1e-6].
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -75,7 +78,8 @@ def analyzer(
             sample_wise_engine=sample_wise_engine,
             disable_analyzer=disable_analyzer,
             log_metrics=log_metrics,
-            **model_kwargs
+            linearizing_lrs=linearizing_lrs,
+            **model_kwargs,
         ):
             super().__init__(**model_kwargs)
 
@@ -184,7 +188,7 @@ def analyzer(
                 criterion=self.criterion,
                 x=x,
                 y=y,
-                eta=1e-5,
+                eta_array=linearizing_lrs,
             )
 
             # Log results
@@ -197,8 +201,10 @@ def analyzer(
                     "batch_grad_norms_loss",
                     samples_results["batch_grad_norms_loss"],
                 )
-                self.log("loss_value", probe_results[0])
-                self.log("perturbed_loss_value", probe_results[1])
+                for eta, (loss, perturbed_loss) in probe_results.items():
+                    self.log(f"linearizer/loss_eta_{eta}", loss)
+                    if perturbed_loss is not None:
+                        self.log(f"linearizer/perturbed_loss_eta_{eta}", perturbed_loss)
                 self.log("actual_batch_size", x.shape[0])
 
             return None
