@@ -4,8 +4,6 @@ from typing import Tuple
 
 import torch
 
-from perspic.utils import set_track_running_stats
-
 
 class Linearizer:
     """
@@ -45,12 +43,7 @@ class Linearizer:
         orig_sched_state = None
         if scheduler is not None:
             orig_sched_state = copy.deepcopy(scheduler.state_dict())
-        # 1c. Train/eval mode
-        orig_mode = model.training
-        model = set_track_running_stats(
-            model, track=False
-        )  # Only use current batch stats
-        model.train()  # still uses batch‐stats, but buffers won’t update
+        # 1c. Determine device for later restoration
         device = (
             next(model.parameters()).device
             if any(p.requires_grad for p in model.parameters())
@@ -96,11 +89,4 @@ class Linearizer:
             # 4b. Scheduler state
             if scheduler is not None:
                 scheduler.load_state_dict(orig_sched_state)
-            # restore_bn_momentum(bn_layers)
-            model = set_track_running_stats(model, track=True)
-            # 4c. Restore train/eval mode
-            if orig_mode:
-                model.train()
-            else:
-                model.eval()
         return (loss, perturbed_loss)  # type: ignore

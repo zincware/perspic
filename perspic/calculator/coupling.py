@@ -3,10 +3,10 @@ class CouplingCalculator:
         pass
 
     def calculate(
-        self, delL, eta_loss, eta_net, learning_rate_of_virtual_step
+        self, loss_before, loss_after, chi_loss, chi_net, learning_rate_of_virtual_step
     ):  # noqa: E501
-        coupling_value = -delL / (
-            learning_rate_of_virtual_step * eta_loss * eta_net
+        coupling_value = -(loss_after - loss_before) / (
+            learning_rate_of_virtual_step * chi_loss * chi_net
         )  # noqa: E501
         return coupling_value
 

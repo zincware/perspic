@@ -4,8 +4,6 @@ import torch
 import torch.func as func
 import torch.nn as nn
 
-from perspic.utils import set_track_running_stats
-
 
 class SamplewiseCalculatorFunctorch:
     """Calculate per-sample gradient norms using functorch."""
@@ -22,7 +20,11 @@ class SamplewiseCalculatorFunctorch:
         the loss function using functorch.
 
         Args:
-            model: The neural network model.
+            model: The neural network model. The model's forward is assumed to support
+                sample-wise gradient computation. For models containing BatchNorm
+                layers, see e.g. `BatchStatSnapshot` context manager in `perspic.utils`
+                to temporarily adjust the BatchNorm behavior for correct sample-wise
+                gradient computation.
             loss_fn: Loss function callable.
             inputs: Input tensor batch.
             targets: Target tensor batch.
@@ -30,9 +32,6 @@ class SamplewiseCalculatorFunctorch:
         Returns:
             Dictionary containing batch gradient norms for network and loss.
         """
-        # Set track_running_states to False for BatchNorm layers to only
-        # update on the current batch
-        model = set_track_running_stats(model, False)
         batch_grad_norms_network = (
             SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
                 model, inputs
@@ -45,7 +44,6 @@ class SamplewiseCalculatorFunctorch:
         )
 
         # Restore the track_running_states to True for BatchNorm layers
-        model = set_track_running_stats(model, True)
         return {
             "batch_grad_norms_network": batch_grad_norms_network,
             "batch_grad_norms_loss": batch_grad_norms_loss,

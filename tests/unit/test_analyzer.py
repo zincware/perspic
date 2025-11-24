@@ -275,7 +275,7 @@ class TestBeforeTrainingStepHook:
         model._before_training_step((x, y), 0)
 
         # Verify log was called for each metric
-        assert model.log.call_count == 5
+        assert model.log.call_count == 7
         logged_metrics = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
         assert "batch_grad_norms_network" in logged_metrics
@@ -283,6 +283,8 @@ class TestBeforeTrainingStepHook:
         assert "loss_value" in logged_metrics
         assert "perturbed_loss_value" in logged_metrics
         assert "actual_batch_size" in logged_metrics
+        assert "delta_loss" in logged_metrics
+        assert "coupling_value" in logged_metrics
 
     @patch.object(SamplewiseCalculatorFunctorch, "compute")
     @patch.object(Linearizer, "probe_train_step")

@@ -322,48 +322,48 @@ class TestModelCompatibility:
         # Should complete without errors
         assert True
 
-    # def test_with_batchnorm_model(self, batchnorm_module):
-    #     """Works with BatchNorm layers."""
-    #     torch.manual_seed(42)
-    #     model = analyzer(batchnorm_module)
+    def test_with_batchnorm_model(self, batchnorm_module):
+        """Works with BatchNorm layers."""
+        torch.manual_seed(42)
+        model = analyzer(batchnorm_module)
 
-    #     # Train mode
-    #     model.train()
-    #     batch = (torch.randn(4, 10), torch.randint(0, 2, (4,)))
-    #     dataset = TensorDataset(*batch)
-    #     dataloader = DataLoader(dataset, batch_size=4)
+        # Train mode
+        model.train()
+        batch = (torch.randn(4, 10), torch.randint(0, 2, (4,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=4)
 
-    #     trainer = pl.Trainer(
-    #         max_steps=1,
-    #         enable_checkpointing=False,
-    #         logger=False,
-    #         enable_progress_bar=False,
-    #     )
-    #     trainer.fit(model, dataloader)
+        trainer = pl.Trainer(
+            max_steps=2,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer.fit(model, dataloader)
 
-    #     # Verify model is still in train mode after analysis
-    #     assert model.training
+        # Verify model is still in train mode after analysis
+        assert model.training
 
-    # def test_with_dropout_residual_model(self, dropout_residual_module):
-    #     """Works with Dropout and residual connections."""
-    #     torch.manual_seed(42)
-    #     model = analyzer(dropout_residual_module)
+    def test_with_dropout_residual_model(self, dropout_residual_module):
+        """Works with Dropout and residual connections."""
+        torch.manual_seed(42)
+        model = analyzer(dropout_residual_module)
 
-    #     model.train()
-    #     batch = (torch.randn(4, 10), torch.randint(0, 2, (4,)))
-    #     dataset = TensorDataset(*batch)
-    #     dataloader = DataLoader(dataset, batch_size=4)
+        model.train()
+        batch = (torch.randn(4, 10), torch.randint(0, 2, (4,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=4)
 
-    #     trainer = pl.Trainer(
-    #         max_steps=1,
-    #         enable_checkpointing=False,
-    #         logger=False,
-    #         enable_progress_bar=False,
-    #     )
-    #     trainer.fit(model, dataloader)
+        trainer = pl.Trainer(
+            max_steps=2,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer.fit(model, dataloader)
 
-    #     # Should complete without errors
-    #     assert True
+        # Should complete without errors
+        assert True
 
 
 class TestPyTorchIntegration:
