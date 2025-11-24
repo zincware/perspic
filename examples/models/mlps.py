@@ -68,7 +68,7 @@ class BatchNormMLP(nn.Module):
     """
     MLP with Batch Normalization layers for improved training stability.
 
-    Architecture: Input (3072) -> 512 -> BN -> 256 -> BN -> Output (10)
+    Architecture: Input (3072) -> 128 -> BN -> 128 -> BN -> Output (10)
     """
 
     def __init__(self, width1=128, width2=128):
@@ -77,14 +77,12 @@ class BatchNormMLP(nn.Module):
         self.flatten = nn.Flatten()
         self.model = nn.Sequential(
             nn.Linear(32 * 32 * 3, width1),
-            nn.ReLU(),
-            nn.Linear(width1, width1),
             nn.BatchNorm1d(width1),
             nn.ReLU(),
-            # nn.Linear(width1, width2),
-            # nn.BatchNorm1d(width2),
-            # nn.ReLU(),
-            nn.Linear(width1, 1),
+            nn.Linear(width1, width2),
+            nn.BatchNorm1d(width2),
+            nn.ReLU(),
+            nn.Linear(width2, 10),
         )
 
     def forward(self, x):
