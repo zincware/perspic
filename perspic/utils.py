@@ -82,7 +82,6 @@ class BatchStatSnapshot:
     See Also
     --------
     torch.func.vmap : Vectorized map for batched operations
-    set_track_running_stats : Disable/enable running stats tracking
     """
 
     def __init__(self, model, data):
