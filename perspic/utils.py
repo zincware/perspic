@@ -98,6 +98,7 @@ class BatchStatSnapshot:
         self.data = data
         self.original_momentums = {}  # Store original momentum values
         self.original_training_states = {}  # Store original train/eval states
+        self.original_running_stats = {}  # Store original running mean/var
         self.original_model_training = None  # Store model's overall training state
         self.bn_input_shapes = {}  # Track input shapes for Bessel's correction
 
@@ -119,6 +120,10 @@ class BatchStatSnapshot:
             if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
                 self.original_momentums[name] = module.momentum
                 self.original_training_states[name] = module.training
+                self.original_running_stats[name] = {
+                    "mean": module.running_mean.clone(),
+                    "var": module.running_var.clone(),
+                }
                 module.momentum = 1.0
                 module.train()  # Ensure we are in train mode to update stats
 
@@ -212,6 +217,8 @@ class BatchStatSnapshot:
             if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
                 module.momentum = self.original_momentums[name]
                 module.train(self.original_training_states[name])
+                module.running_mean.copy_(self.original_running_stats[name]["mean"])
+                module.running_var.copy_(self.original_running_stats[name]["var"])
 
         # Restore the model's overall training state
         self.model.train(self.original_model_training)

@@ -429,3 +429,31 @@ class TestBatchStatSnapshot:
 
         # Verify model is back in train mode after exit
         assert model.training
+
+    def test_running_stats_restored_after_exit(
+        self, simple_batchnorm_model, sample_data_1d
+    ):
+        """Test that running stats are restored after exiting context."""
+        model = simple_batchnorm_model
+        data = sample_data_1d
+
+        bn_layer = model[1]
+
+        # Set some initial running stats
+        initial_mean = torch.randn_like(bn_layer.running_mean)
+        initial_var = torch.rand_like(bn_layer.running_var)
+        bn_layer.running_mean.copy_(initial_mean)
+        bn_layer.running_var.copy_(initial_var)
+
+        with BatchStatSnapshot(model, data):
+            # Stats should change inside context
+            assert not torch.allclose(bn_layer.running_mean, initial_mean)
+            assert not torch.allclose(bn_layer.running_var, initial_var)
+
+        # Stats should be restored after exit
+        assert torch.allclose(
+            bn_layer.running_mean, initial_mean
+        ), "Running mean not restored"
+        assert torch.allclose(
+            bn_layer.running_var, initial_var
+        ), "Running var not restored"
