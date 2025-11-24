@@ -1,8 +1,8 @@
 import pickle
+
 import pytest
 import torch
 import torch.nn as nn
-
 
 from perspic import Linearizer
 
@@ -33,11 +33,13 @@ def complex_model():
 
 class TestLinearizer:
     """Placeholder test class for linearizer-related tests."""
+
     pass
 
 
 class TestMemoryUsageOfSaveLoad:
     """Test for memory usage overhead of Linearizer."""
+
     pass
 
 
@@ -73,8 +75,7 @@ class TestMultipleLearningRates:
 
         # Verify not all perturbed losses are identical
         perturbed_losses = [
-            results[eta][1] for eta in eta_array 
-            if results[eta][1] is not None
+            results[eta][1] for eta in eta_array if results[eta][1] is not None
         ]
         unique_losses = len(set(perturbed_losses))
         assert unique_losses > 1, (
@@ -85,9 +86,10 @@ class TestMultipleLearningRates:
 
 class TestLoadModelState:
     """Test for _load_model_state function.
-        should only test for accepting bytes,
-        rejecting non-bytes and accepting optional device parameter    
+    should only test for accepting bytes,
+    rejecting non-bytes and accepting optional device parameter
     """
+
     def test_load_accepts_bytes_state(self, simple_model):
         saved_bytes = Linearizer._save_model_state(simple_model)
         assert isinstance(saved_bytes, bytes)
@@ -133,6 +135,7 @@ class TestLoadModelState:
 
 class TestSaveModelState:
     """Test for _save_model_state function."""
+
     def test_save_returns_bytes(self, simple_model):
         state_bytes = Linearizer._save_model_state(simple_model)
         assert isinstance(state_bytes, bytes)
@@ -164,9 +167,7 @@ class TestSaveModelState:
 class TestSaveLoadIntegration:
     def test_save_and_load_round_trip(self, simple_model):
         """Test complete save and load cycle preserves model state."""
-        original_state = {
-            k: v.clone() for k, v in simple_model.state_dict().items()
-        }
+        original_state = {k: v.clone() for k, v in simple_model.state_dict().items()}
 
         saved_bytes = Linearizer._save_model_state(simple_model)
 
@@ -184,9 +185,7 @@ class TestSaveLoadIntegration:
 
     def test_save_and_load_with_complex_model(self, complex_model):
         """Test round-trip preserves buffers (BatchNorm stats)."""
-        original_state = {
-            k: v.clone() for k, v in complex_model.state_dict().items()
-        }
+        original_state = {k: v.clone() for k, v in complex_model.state_dict().items()}
 
         saved_bytes = Linearizer._save_model_state(complex_model)
 
@@ -205,9 +204,7 @@ class TestSaveLoadIntegration:
 
     def test_multiple_save_load_cycles(self, simple_model):
         """Test multiple consecutive save/load cycles."""
-        original_state = {
-            k: v.clone() for k, v in simple_model.state_dict().items()
-        }
+        original_state = {k: v.clone() for k, v in simple_model.state_dict().items()}
 
         for _ in range(3):
             saved_bytes = Linearizer._save_model_state(simple_model)
