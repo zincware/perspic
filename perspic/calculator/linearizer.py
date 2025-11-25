@@ -9,19 +9,21 @@ from perspic.utils import set_track_running_stats
 
 class Linearizer:
     """
-    Class to perform a probe training step on a model.
+    Class to perform multiple probe training steps on a model with different learning
+    rates.
+    Args:
+        eta_array: List of learning rates for probing.
     """
 
-    def __init__(self, lr_array: Optional[list[float]] = [1e-5]):
-        self.lr_array = lr_array
+    def __init__(self, eta_array: list[float]):
+        self.eta_array = eta_array
 
-    @staticmethod
     def probe_train_step(
+        self,
         model: torch.nn.Module,
         criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         x: torch.Tensor,
         y: torch.Tensor,
-        eta_array: list[float],
         scheduler: Optional[Any] = None,
     ) -> dict[float, Tuple[float, Optional[float]]]:
         """
@@ -31,7 +33,6 @@ class Linearizer:
             model      : nn.Module
             criterion  : loss function
             x, y       : current batch input and targets
-            eta_array  : small learning rates, e.g. [1e-5, 1e-6, ...]
             scheduler  : optional lr-scheduler (snapshot & restore if provided)
         Returns:
             dict[float, Tuple[torch.Tensor, Optional[torch.Tensor]]]
@@ -68,7 +69,7 @@ class Linearizer:
                 for param in model.parameters()
             ]
             # probe each eta
-            for i, eta in enumerate(eta_array):
+            for i, eta in enumerate(self.eta_array):
                 try:
                     with torch.no_grad():
                         for param, grad in param_grads:
@@ -86,7 +87,7 @@ class Linearizer:
                     results[eta] = (loss.detach().item(), None)
 
                 finally:
-                    if i < len(eta_array) - 1:
+                    if i < len(self.eta_array) - 1:
                         with torch.no_grad():
                             for param, grad in param_grads:
                                 if grad is not None:
@@ -153,13 +154,12 @@ if __name__ == "__main__":
     y = torch.randint(0, 5, (4,))
 
     eta_array = [1e-2, 1e-4, 1e-7]
-    results = Linearizer.probe_train_step(
+    linearizer = Linearizer(eta_array=eta_array)
+    results = linearizer.probe_train_step(
         model=model,
         criterion=criterion,
         x=x,
         y=y,
-        eta_array=eta_array,
-        scheduler=None,
     )
 
     print(results)

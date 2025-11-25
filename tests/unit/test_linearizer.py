@@ -52,13 +52,13 @@ class TestMultipleLearningRates:
         x = torch.randn(4, 10)
         y = torch.randint(0, 5, (4,))
         eta_array = [1e-1, 1e-2, 1e-3, 1e-6]
+        linearizer = Linearizer(eta_array=eta_array)
 
-        results = Linearizer.probe_train_step(
+        results = linearizer.probe_train_step(
             model=model,
             criterion=criterion,
             x=x,
             y=y,
-            eta_array=eta_array,
             scheduler=None,
         )
 

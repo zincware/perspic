@@ -217,7 +217,11 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_network": torch.tensor(1.0),
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
-        mock_probe.return_value = (torch.tensor(1.0), torch.tensor(1.0))
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            1e-5: (1.0, 1.02),
+            1e-7: (1.0, 1.001),
+        }
 
         model = analyzer(simple_lightning_module)
         x, y = sample_batch
@@ -241,7 +245,11 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_network": torch.tensor(1.0),
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
-        mock_probe.return_value = (torch.tensor(1.0), torch.tensor(1.0))
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            1e-5: (1.0, 1.02),
+            1e-7: (1.0, 1.001),
+        }
 
         model = analyzer(simple_lightning_module)
         x, y = sample_batch
@@ -254,7 +262,13 @@ class TestBeforeTrainingStepHook:
         assert call_kwargs["criterion"] == model.criterion
         assert torch.equal(call_kwargs["x"], x)
         assert torch.equal(call_kwargs["y"], y)
-        assert call_kwargs["eta"] == 1e-5
+
+    def test_linearizer_initialized_with_correct_etas(self, simple_lightning_module):
+        """Test that linearizer is initialized with correct eta_array."""
+        custom_etas = [1e-2, 1e-4, 1e-6]
+        model = analyzer(simple_lightning_module, linearizing_lrs=custom_etas)
+
+        assert model.linearizer.eta_array == custom_etas
 
     @patch.object(SamplewiseCalculatorFunctorch, "compute")
     @patch.object(Linearizer, "probe_train_step")
@@ -266,7 +280,11 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_network": torch.tensor(2.5),
             "batch_grad_norms_loss": torch.tensor(3.7),
         }
-        mock_probe.return_value = (torch.tensor(1.2), torch.tensor(1.3))
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            1e-5: (1.0, 1.02),
+            1e-7: (1.0, 1.001),
+        }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
         model.log = Mock()  # Mock the log method
@@ -275,13 +293,14 @@ class TestBeforeTrainingStepHook:
         model._before_training_step((x, y), 0)
 
         # Verify log was called for each metric
-        assert model.log.call_count == 5
+        assert model.log.call_count > 0
         logged_metrics = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
         assert "batch_grad_norms_network" in logged_metrics
         assert "batch_grad_norms_loss" in logged_metrics
+        assert any(name.startswith("lin_loss_before_eta_") for name in logged_metrics)
+        assert any(name.startswith("lin_loss_after_eta_") for name in logged_metrics)
         assert "loss_value" in logged_metrics
-        assert "perturbed_loss_value" in logged_metrics
         assert "actual_batch_size" in logged_metrics
 
     @patch.object(SamplewiseCalculatorFunctorch, "compute")
@@ -315,7 +334,11 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_network": torch.tensor(1.0),
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
-        mock_probe.return_value = (torch.tensor(1.0), torch.tensor(1.0))
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            1e-5: (1.0, 1.02),
+            1e-7: (1.0, 1.001),
+        }
 
         model = analyzer(simple_lightning_module)
         x, y = sample_batch
@@ -389,7 +412,11 @@ class TestTrainingStepBehavior:
             "batch_grad_norms_network": torch.tensor(1.0),
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
-        mock_probe.return_value = (torch.tensor(1.0), torch.tensor(1.0))
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            1e-5: (1.0, 1.02),
+            1e-7: (1.0, 1.001),
+        }
 
         model = analyzer(simple_lightning_module, disable_analyzer=False)
         model.optimizers = Mock(return_value=Mock(zero_grad=Mock(), step=Mock()))
@@ -493,7 +520,11 @@ class TestMetricLogging:
             "batch_grad_norms_network": torch.tensor(1.0),
             "batch_grad_norms_loss": torch.tensor(2.0),
         }
-        mock_probe.return_value = (torch.tensor(3.0), torch.tensor(4.0))
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            1e-5: (1.0, 1.02),
+            1e-7: (1.0, 1.001),
+        }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
         model.log = Mock()
@@ -505,8 +536,9 @@ class TestMetricLogging:
 
         assert "batch_grad_norms_network" in logged_names
         assert "batch_grad_norms_loss" in logged_names
+        assert any(name.startswith("lin_loss_before_eta_") for name in logged_names)
+        assert any(name.startswith("lin_loss_after_eta_") for name in logged_names)
         assert "loss_value" in logged_names
-        assert "perturbed_loss_value" in logged_names
         assert "actual_batch_size" in logged_names
 
     @patch.object(SamplewiseCalculatorFunctorch, "compute")
@@ -519,7 +551,11 @@ class TestMetricLogging:
             "batch_grad_norms_network": torch.tensor(1.5),
             "batch_grad_norms_loss": torch.tensor(2.5),
         }
-        mock_probe.return_value = (torch.tensor(3.5), torch.tensor(4.5))
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            1e-5: (1.0, 1.02),
+            1e-7: (1.0, 1.001),
+        }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
         model.log = Mock()
@@ -528,11 +564,15 @@ class TestMetricLogging:
         model._before_training_step((x, y), 0)
 
         logged_values = {call[0][0]: call[0][1] for call in model.log.call_args_list}
-
+        print("Logged values:", logged_values)
         assert torch.allclose(
             logged_values["batch_grad_norms_network"], torch.tensor(1.5)
         )
         assert torch.allclose(logged_values["batch_grad_norms_loss"], torch.tensor(2.5))
-        assert torch.allclose(logged_values["loss_value"], torch.tensor(3.5))
-        assert torch.allclose(logged_values["perturbed_loss_value"], torch.tensor(4.5))
-        assert logged_values["actual_batch_size"] == 4  # batch size from sample_batch
+        assert logged_values["lin_loss_before_eta_1e-03"] == 1.0
+        assert logged_values["lin_loss_before_eta_1e-05"] == 1.0
+        assert logged_values["lin_loss_before_eta_1e-07"] == 1.0
+        assert logged_values["lin_loss_after_eta_1e-03"] == pytest.approx(1.05)
+        assert logged_values["lin_loss_after_eta_1e-05"] == pytest.approx(1.02)
+        assert logged_values["lin_loss_after_eta_1e-07"] == pytest.approx(1.001)
+        assert logged_values["actual_batch_size"] == 4

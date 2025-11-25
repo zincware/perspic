@@ -12,7 +12,7 @@ def analyzer(
     sample_wise_engine: Optional[str] = "functorch",
     disable_analyzer: bool = False,
     log_metrics: bool = True,
-    linearizing_lrs: list[float] = [1e-1, 1e-2, 1e-3, 1e-6],
+    linearizing_lrs: list[float] = [1e-3, 1e-5, 1e-7],
     **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -96,7 +96,7 @@ def analyzer(
                     "sample_wise_engine='opacus' is not supported yet."
                 )
 
-            self.linearizer = Linearizer()
+            self.linearizer = Linearizer(eta_array=linearizing_lrs)
             self.disable_analyzer = disable_analyzer
             self.log_metrics = log_metrics
 
@@ -188,7 +188,6 @@ def analyzer(
                 criterion=self.criterion,
                 x=x,
                 y=y,
-                eta_array=linearizing_lrs,
             )
 
             # Log results
@@ -202,9 +201,11 @@ def analyzer(
                     samples_results["batch_grad_norms_loss"],
                 )
                 for eta, (loss, perturbed_loss) in probe_results.items():
-                    self.log(f"linearizer/loss_eta_{eta}", loss)
+                    eta_str = f"{eta:.0e}"
+                    self.log(f"lin_loss_before_eta_{eta_str}", loss)
                     if perturbed_loss is not None:
-                        self.log(f"linearizer/perturbed_loss_eta_{eta}", perturbed_loss)
+                        self.log(f"lin_loss_after_eta_{eta_str}", perturbed_loss)
+                self.log("loss_value", probe_results[list(probe_results.keys())[0]][0])
                 self.log("actual_batch_size", x.shape[0])
 
             return None
