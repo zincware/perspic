@@ -1,15 +1,20 @@
-"""Utility functions for model examples.
+"""Utility functions for models.
 
-This module provides helper functions for inspecting and displaying
-information about PyTorch models used in examples and tests.
+This module contains utility functions for all model-related components,
+including both pure PyTorch architectures and PyTorch Lightning modules.
 """
 
+import torch.nn as nn
 
-def print_model_info(model, verbose=True):
+
+def print_model_info(model: nn.Module, verbose: bool = True) -> None:
     """Print parameter count and optionally model architecture.
 
+    Note: This function is intended for pure PyTorch architectures (nn.Module),
+    not for PyTorch Lightning modules.
+
     Args:
-        model: The PyTorch model to inspect
+        model: The PyTorch model to inspect.
         verbose: If True, prints full architecture. If False, prints only name and parameter count.
     """
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
