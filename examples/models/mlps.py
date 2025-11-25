@@ -8,6 +8,8 @@ for use in examples and tests. All models are designed for CIFAR-10 (32x32x3 ima
 import torch
 import torch.nn as nn
 
+from examples.models.utils import print_model_info
+
 
 class SimpleMLP(nn.Module):
     """
@@ -66,7 +68,7 @@ class BatchNormMLP(nn.Module):
     """
     MLP with Batch Normalization layers for improved training stability.
 
-    Architecture: Input (3072) -> 512 -> BN -> 256 -> BN -> Output (10)
+    Architecture: Input (3072) -> 128 -> BN -> 128 -> BN -> Output (10)
     """
 
     def __init__(self, width1=128, width2=128):
@@ -174,17 +176,18 @@ class ResidualBlock(nn.Module):
         return self.relu(x + self.block(x))
 
 
-# Utility function to print model info
-def print_model_info(model):
-    """Print parameter count and model architecture."""
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model: {model.__class__.__name__}")
-    print(f"Number of trainable parameters: {num_params:,}")
-    print(f"Architecture:\n{model}")
-    print("-" * 50)
-
-
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Display MLP model information")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show full model architecture (default: concise mode)",
+    )
+    args = parser.parse_args()
+
     # Example usage: print info for all models
     print("=" * 50)
     print("MLP Models Overview")
@@ -199,4 +202,4 @@ if __name__ == "__main__":
     ]
 
     for model in models:
-        print_model_info(model)
+        print_model_info(model, verbose=args.verbose)
