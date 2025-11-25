@@ -564,7 +564,6 @@ class TestMetricLogging:
         model._before_training_step((x, y), 0)
 
         logged_values = {call[0][0]: call[0][1] for call in model.log.call_args_list}
-        print("Logged values:", logged_values)
         assert torch.allclose(
             logged_values["batch_grad_norms_network"], torch.tensor(1.5)
         )
