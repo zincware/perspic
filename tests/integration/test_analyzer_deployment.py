@@ -344,6 +344,9 @@ class TestModelCompatibility:
         # Verify model is still in train mode after analysis
         assert model.training
 
+        # Should complete without errors
+        assert True
+
     def test_with_dropout_residual_model(self, dropout_residual_module):
         """Works with Dropout and residual connections."""
         torch.manual_seed(42)
@@ -361,6 +364,9 @@ class TestModelCompatibility:
             enable_progress_bar=False,
         )
         trainer.fit(model, dataloader)
+
+        # Verify model is still in train mode after analysis
+        assert model.training
 
         # Should complete without errors
         assert True
