@@ -30,7 +30,7 @@ def analyzer(
             capabilities. Defaults to False. Mainly for testing purposes.
         log_metrics: If True, logs analysis metrics during training. Defaults to True.
         linearizing_lrs: List of learning rates for linear probing steps. Defaults to
-            [1e-1, 1e-2, 1e-3, 1e-6].
+            [1e-3, 1e-5, 1e-7].
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
