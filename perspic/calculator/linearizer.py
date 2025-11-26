@@ -10,9 +10,14 @@ from perspic.utils import set_track_running_stats
 class Linearizer:
     """
     Class to perform multiple probe training steps on a model with different learning
-    rates.
+    rates to get the linearization of the loss landscape.
     Args:
-        eta_array: List of learning rates for probing.
+        eta_array: List of learning rates for probing. As this gets done on every
+        training step of the analyzer, the eta_array is defined at initialization time.
+    Returns:
+        A dictionary mapping each learning rate to a tuple containing the original loss
+        and the perturbed loss after the tiny step. If an error occurs during probing
+        with a specific learning rate, the perturbed loss will be None for that entry.
     """
 
     def __init__(self, eta_array: list[float]):
@@ -28,7 +33,16 @@ class Linearizer:
     ) -> dict[float, Tuple[float, Optional[float]]]:
         """
         Perform a tiny optimizer step (η) using batch-stats but zero-momentum,
-        then undo everything.
+        then undo everything. As this is done for multiple etas, we save/restore the model
+        state only once before/after all etas have been probed.
+        1. Save original model state (params + buffers) to in-memory buffer
+        2. Compute and store loss and gradients on current step
+        3. For each eta in eta_array:
+            a. Propagate (stored) gradients on current batch param -= eta * grad
+            b. Compute perturbed loss on current batch
+            c. Undo tiny step: param += eta * grad (skip for last eta)
+        3. Restore original model state
+        4. Return dictionary of (original loss, perturbed loss) for each eta
         Args:
             model      : nn.Module
             criterion  : loss function

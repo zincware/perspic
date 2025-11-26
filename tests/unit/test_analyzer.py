@@ -310,7 +310,7 @@ class TestBeforeTrainingStepHook:
 
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-        }   
+        }
 
         model = analyzer(simple_lightning_module, log_metrics=False)
         model.log = Mock()
