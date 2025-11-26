@@ -12,7 +12,7 @@ def analyzer(
     sample_wise_engine: Optional[str] = "functorch",
     disable_analyzer: bool = False,
     log_metrics: bool = True,
-    linearizing_lrs: list[float] = [1e-3, 1e-5, 1e-7],
+    linearizing_lrs: list[float] = [1e-3],
     **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -30,7 +30,7 @@ def analyzer(
             capabilities. Defaults to False. Mainly for testing purposes.
         log_metrics: If True, logs analysis metrics during training. Defaults to True.
         linearizing_lrs: List of learning rates for linear probing steps. Defaults to
-            [1e-3, 1e-5, 1e-7].
+            [1e-3].
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 

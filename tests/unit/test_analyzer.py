@@ -219,8 +219,6 @@ class TestBeforeTrainingStepHook:
         }
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-            1e-5: (1.0, 1.02),
-            1e-7: (1.0, 1.001),
         }
 
         model = analyzer(simple_lightning_module)
@@ -247,8 +245,6 @@ class TestBeforeTrainingStepHook:
         }
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-            1e-5: (1.0, 1.02),
-            1e-7: (1.0, 1.001),
         }
 
         model = analyzer(simple_lightning_module)
@@ -282,8 +278,6 @@ class TestBeforeTrainingStepHook:
         }
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-            1e-5: (1.0, 1.02),
-            1e-7: (1.0, 1.001),
         }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
@@ -313,7 +307,10 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_network": torch.tensor(2.5),
             "batch_grad_norms_loss": torch.tensor(3.7),
         }
-        mock_probe.return_value = (torch.tensor(1.2), torch.tensor(1.3))
+
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+        }   
 
         model = analyzer(simple_lightning_module, log_metrics=False)
         model.log = Mock()
@@ -336,8 +333,6 @@ class TestBeforeTrainingStepHook:
         }
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-            1e-5: (1.0, 1.02),
-            1e-7: (1.0, 1.001),
         }
 
         model = analyzer(simple_lightning_module)
@@ -414,8 +409,6 @@ class TestTrainingStepBehavior:
         }
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-            1e-5: (1.0, 1.02),
-            1e-7: (1.0, 1.001),
         }
 
         model = analyzer(simple_lightning_module, disable_analyzer=False)
@@ -522,8 +515,6 @@ class TestMetricLogging:
         }
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-            1e-5: (1.0, 1.02),
-            1e-7: (1.0, 1.001),
         }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
@@ -553,8 +544,6 @@ class TestMetricLogging:
         }
         mock_probe.return_value = {
             1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
-            1e-5: (1.0, 1.02),
-            1e-7: (1.0, 1.001),
         }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
@@ -569,9 +558,5 @@ class TestMetricLogging:
         )
         assert torch.allclose(logged_values["batch_grad_norms_loss"], torch.tensor(2.5))
         assert logged_values["lin_loss_before_eta_1e-03"] == 1.0
-        assert logged_values["lin_loss_before_eta_1e-05"] == 1.0
-        assert logged_values["lin_loss_before_eta_1e-07"] == 1.0
         assert logged_values["lin_loss_after_eta_1e-03"] == pytest.approx(1.05)
-        assert logged_values["lin_loss_after_eta_1e-05"] == pytest.approx(1.02)
-        assert logged_values["lin_loss_after_eta_1e-07"] == pytest.approx(1.001)
         assert logged_values["actual_batch_size"] == 4
