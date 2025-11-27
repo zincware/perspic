@@ -30,6 +30,7 @@ def complex_model():
         nn.Linear(20, 5),
     )
 
+
 @pytest.fixture(params=["cpu", "cuda"])
 def device(request):
     """Parametrize tests to run on both CPU and GPU."""
