@@ -141,4 +141,5 @@ class Linearizer:
         map_loc = device if device is not None else None
         state = torch.load(buf, map_location=map_loc)
         model.load_state_dict(state)
+
         return model

@@ -30,14 +30,23 @@ def complex_model():
         nn.Linear(20, 5),
     )
 
+@pytest.fixture(params=["cpu", "cuda"])
+def device(request):
+    """Parametrize tests to run on both CPU and GPU."""
+    if request.param == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    return torch.device(request.param)
+
 
 class TestLinearizer:
     """Placeholder test class for linearizer-related tests."""
+
     pass
 
 
 class TestMemoryUsageOfSaveLoad:
     """Test for memory usage overhead of Linearizer."""
+
     pass
 
 
@@ -83,41 +92,46 @@ class TestMultipleLearningRates:
             f"got {unique_losses}: {perturbed_losses}"
         )
         assert len(unperturbed_losses) == len(eta_array)
-        assert all(loss == unperturbed_losses[0] for loss in unperturbed_losses), (
-            "Unperturbed losses differ: {unperturbed_losses}"
-        )
+        assert all(
+            loss == unperturbed_losses[0] for loss in unperturbed_losses
+        ), "Unperturbed losses differ: {unperturbed_losses}"
 
 
 class TestLoadModelState:
     """Test for _load_model_state function. Should only test for loading from bytes,
-       rejecting non-bytes and accepting optional device parameter. For full save/load
-       integration tests, see TestSaveLoadIntegration below.
+    rejecting non-bytes and accepting optional device parameter. For full save/load
+    integration tests, see TestSaveLoadIntegration below.
     """
 
-    def test_load_accepts_bytes_state(self, simple_model):
+    def test_load_accepts_bytes_state(self, simple_model, device):
+        simple_model = simple_model.to(device)
         saved_bytes = Linearizer._save_model_state(simple_model)
         assert isinstance(saved_bytes, bytes)
 
-        result = Linearizer._load_model_state(simple_model, saved_bytes)
+        result = Linearizer._load_model_state(simple_model, saved_bytes, device=device)
         assert isinstance(result, torch.nn.Module)
         assert result is simple_model
 
-    def test_load_rejects_non_bytes_state(self, simple_model):
+    def test_load_rejects_non_bytes_state(self, simple_model, device):
+        simple_model = simple_model.to(device)
         invalid_state = "not bytes"
         with pytest.raises((TypeError, pickle.UnpicklingError, EOFError)):
             Linearizer._load_model_state(simple_model, invalid_state)
 
-    def test_load_rejects_dict_state(self, simple_model):
+    def test_load_rejects_dict_state(self, simple_model, device):
+        simple_model = simple_model.to(device)
         state_dict = simple_model.state_dict()
         with pytest.raises((TypeError, pickle.UnpicklingError)):
             Linearizer._load_model_state(simple_model, state_dict)
 
-    def test_load_empty_model_state(self, simple_model):
+    def test_load_empty_model_state(self, simple_model, device):
+        simple_model = simple_model.to(device)
         empty_state = b""
         with pytest.raises((KeyError, EOFError)):
             Linearizer._load_model_state(simple_model, empty_state)
 
-    def test_load_accepts_optional_device(self, simple_model):
+    def test_load_accepts_optional_device(self, simple_model, device):
+        simple_model = simple_model.to(device)
         saved_bytes = Linearizer._save_model_state(simple_model)
 
         # Should accept None
@@ -125,40 +139,62 @@ class TestLoadModelState:
         assert isinstance(result1, torch.nn.Module)
 
         # Should accept torch.device
-        device = torch.device("cpu")
         result2 = Linearizer._load_model_state(simple_model, saved_bytes, device=device)
         assert isinstance(result2, torch.nn.Module)
 
-    def test_load_rejects_invalid_device_type(self, simple_model):
+    def test_load_rejects_invalid_device_type(self, simple_model, device):
+        simple_model = simple_model.to(device)
         saved_bytes = Linearizer._save_model_state(simple_model)
 
         # Should raise or handle gracefully
         with pytest.raises((TypeError, RuntimeError)):
             Linearizer._load_model_state(simple_model, saved_bytes, device="invalid")
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_load_moves_tensors_to_gpu(self, simple_model):
+        """Test that load can move model to GPU."""
+        simple_model = simple_model.cuda()
+        saved_bytes = Linearizer._save_model_state(simple_model)
+
+        # Load to GPU
+        device = torch.device("cuda")
+        Linearizer._load_model_state(simple_model, saved_bytes, device=device)
+
+        # Verify all params are on GPU
+        for param in simple_model.parameters():
+            assert (
+                param.device.type == "cuda"
+            ), f"Parameter should be on CUDA, got {param.device}"
+
 
 class TestSaveModelState:
     """Test for _save_model_state function."""
 
-    def test_save_returns_bytes(self, simple_model):
+    def test_save_returns_bytes(self, simple_model, device):
+        simple_model = simple_model.to(device)
         state_bytes = Linearizer._save_model_state(simple_model)
         assert isinstance(state_bytes, bytes)
 
-    def test_save_non_empty_bytes(self, simple_model):
+    def test_save_non_empty_bytes(self, simple_model, device):
+        simple_model = simple_model.to(device)
         state_bytes = Linearizer._save_model_state(simple_model)
         assert len(state_bytes) > 0
 
-    def test_save_consistent_across_calls(self, simple_model):
+    def test_save_consistent_across_calls(self, simple_model, device):
+        simple_model = simple_model.to(device)
         saved_bytes_1 = Linearizer._save_model_state(simple_model)
         saved_bytes_2 = Linearizer._save_model_state(simple_model)
         assert saved_bytes_1 == saved_bytes_2
 
-    def test_save_two_different_models(self, simple_model, complex_model):
+    def test_save_two_different_models(self, simple_model, complex_model, device):
+        simple_model = simple_model.to(device)
+        complex_model = complex_model.to(device)
         saved_bytes_1 = Linearizer._save_model_state(simple_model)
         saved_bytes_2 = Linearizer._save_model_state(complex_model)
         assert saved_bytes_1 != saved_bytes_2
 
-    def test_save_differs_when_parameters_change(self, simple_model):
+    def test_save_differs_when_parameters_change(self, simple_model, device):
+        simple_model = simple_model.to(device)
         saved_bytes_1 = Linearizer._save_model_state(simple_model)
         with torch.no_grad():
             for param in simple_model.parameters():
@@ -182,8 +218,9 @@ class TestProbeTrainStepCore:
         # All gradients should be None or zero
         for param in simple_model.parameters():
             if param.grad is not None:
-                assert torch.allclose(param.grad, torch.zeros_like(param.grad)), \
-                    "Gradients should be zeroed after probing"
+                assert torch.allclose(
+                    param.grad, torch.zeros_like(param.grad)
+                ), "Gradients should be zeroed after probing"
 
     def test_exception_in_probe_stores_none(self, simple_model):
         criterion = nn.CrossEntropyLoss()
@@ -227,8 +264,9 @@ class TestProbeTrainStepCore:
         )
 
         original_losses = [results[eta][0] for eta in eta_array]
-        assert all(loss == original_losses[0] for loss in original_losses), \
-            f"Original losses should be identical: {original_losses}"
+        assert all(
+            loss == original_losses[0] for loss in original_losses
+        ), f"Original losses should be identical: {original_losses}"
 
 
 class TestSaveLoadIntegration:
