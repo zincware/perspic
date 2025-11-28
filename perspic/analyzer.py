@@ -5,13 +5,14 @@ import pytorch_lightning as pl
 
 from perspic.calculator.coupling import CouplingCalculator
 from perspic.calculator.linearizer import Linearizer
-from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
 from perspic.utils import BatchStatSnapshot
 
 
 def analyzer(
     lightning_module: pl.LightningModule,
-    sample_wise_engine: Optional[str] = "functorch",
+    sample_wise_engine: Optional[str] = "opacus",
     disable_analyzer: bool = False,
     log_metrics: bool = True,
     **model_kwargs
@@ -26,7 +27,7 @@ def analyzer(
         lightning_module: A PyTorch Lightning module class to wrap with
             analysis features.
         sample_wise_engine: Engine for computing sample-wise gradients.
-            Options: 'functorch' or 'opacus'. Defaults to 'functorch'.
+            Options: 'functorch' or 'opacus'. Defaults to 'opacus'.
         disable_analyzer: If True, wraps the module without adding analysis
             capabilities. Defaults to False. Mainly for testing purposes.
         log_metrics: If True, logs analysis metrics during training. Defaults to True.
@@ -90,9 +91,7 @@ def analyzer(
             if sample_wise_engine == "functorch":
                 self.sample_calc = SamplewiseCalculatorFunctorch()
             elif sample_wise_engine == "opacus":
-                raise NotImplementedError(
-                    "sample_wise_engine='opacus' is not supported yet."
-                )
+                self.sample_calc = SamplewiseCalculatorOpacus()
 
             self.linearizer = Linearizer()
             self.coupling_calc = CouplingCalculator()

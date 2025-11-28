@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.utils.data as data
 from nngeometry import GramMatrix
 
-from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
 from perspic.utils import BatchStatSnapshot
 
 torch.set_float32_matmul_precision("high")
@@ -280,3 +280,49 @@ class TestTraceComputation:
         assert "batch_grad_norms_loss" in results
         assert results["batch_grad_norms_network"].ndim == 0
         assert results["batch_grad_norms_loss"].ndim == 0
+
+    def test_reduce_parameter_network(self):
+        """Test that reduce parameter works correctly for network gradients."""
+        torch.manual_seed(42)
+        model = MLP(output_dim=2, sum_output=False, n_hidden=10)
+        X = torch.randn(10, 10)
+
+        # With reduce=True (default) -> scalar
+        grad_norms_reduced = self._compute_grad_norms(model, X)
+        assert grad_norms_reduced.ndim == 0, "reduce=True should return scalar"
+
+        # With reduce=False -> per-sample norms
+        calculator = SamplewiseCalculatorFunctorch()
+        grad_norms_per_sample = calculator._compute_per_sample_gradient_norm_network(
+            model, X, reduce=False
+        )
+        assert grad_norms_per_sample.shape == (
+            10,
+        ), "reduce=False should return (batch_size,)"
+
+        # Sum of per-sample should equal reduced
+        assert torch.allclose(grad_norms_reduced, grad_norms_per_sample.sum())
+
+    def test_reduce_parameter_loss(self):
+        """Test that reduce parameter works correctly for loss gradients."""
+        torch.manual_seed(42)
+        model = MLP(output_dim=2, sum_output=False, n_hidden=10)
+        X = torch.randn(10, 10)
+        y = torch.randint(0, 2, (10,))
+        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+
+        # With reduce=True (default) -> scalar
+        loss_grad_norms_reduced = self._compute_loss_grad_norms(model, loss_fn, X, y)
+        assert loss_grad_norms_reduced.ndim == 0, "reduce=True should return scalar"
+
+        # With reduce=False -> per-sample norms
+        calculator = SamplewiseCalculatorFunctorch()
+        loss_grad_norms_per_sample = calculator._compute_per_sample_gradient_norm_loss(
+            model, loss_fn, X, y, reduce=False
+        )
+        assert loss_grad_norms_per_sample.shape == (
+            10,
+        ), "reduce=False should return (batch_size,)"
+
+        # Sum of per-sample should equal reduced
+        assert torch.allclose(loss_grad_norms_reduced, loss_grad_norms_per_sample.sum())
