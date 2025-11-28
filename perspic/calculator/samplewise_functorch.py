@@ -8,31 +8,35 @@ from perspic.calculator.samplewise import SamplewiseCalculator
 
 
 class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
-    """Calculate per-sample gradient norms using functorch."""
+    """Calculate per-sample gradient norms using functorch.
+
+    This implementation uses PyTorch's functorch (torch.func) for efficient
+    per-sample gradient computation via vectorized Jacobian calculations.
+
+    Note:
+        For models with BatchNorm, wrap calls with `BatchStatSnapshot` context
+        manager to freeze running statistics for correct sample-wise
+        gradient computation.
+    """
 
     @staticmethod
     def compute(
         model: nn.Module,
-        loss_fn: Callable,
+        loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
         targets: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        """
-        Compute per-sample gradient norms for both the network parameters and
-        the loss function using functorch.
+        """Compute per-sample gradient norms for network and loss.
 
         Args:
-            model: The neural network model. The model's forward is assumed to support
-                sample-wise gradient computation. For models containing BatchNorm
-                layers, see e.g. `BatchStatSnapshot` context manager in `perspic.utils`
-                to temporarily adjust the BatchNorm behavior for correct sample-wise
-                gradient computation.
-            loss_fn: Loss function callable.
-            inputs: Input tensor batch.
-            targets: Target tensor batch.
+            model: The neural network model.
+            loss_fn: Loss function callable that takes (predictions, targets)
+                and returns a scalar loss tensor.
+            inputs: Input tensor batch of shape (batch_size, ...).
+            targets: Target tensor batch of shape (batch_size, ...).
 
         Returns:
-            Dictionary containing batch gradient norms for network and loss.
+            Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
         """
         batch_grad_norms_network = (
             SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
@@ -59,7 +63,7 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
 
         Args:
             model: The neural network model.
-            inputs: Input tensor batch.
+            inputs: Input tensor batch of shape (batch_size, ...).
 
         Returns:
             Dictionary mapping parameter names to per-sample gradients.
@@ -82,13 +86,11 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
     def _compute_per_sample_gradient_norm_network(
         model: nn.Module, inputs: torch.Tensor, reduce: bool = True
     ) -> torch.Tensor:
-        """
-        Compute per-sample gradient magnitudes for the network function f(x)
-        using functorch. -> ∇_theta f
+        """Compute per-sample gradient norms for network parameters (∇_θ f).
 
         Args:
             model: The neural network model.
-            inputs: Input tensor batch.
+            inputs: Input tensor batch of shape (batch_size, ...).
             reduce: If True, sum over batch. If False, return per-sample norms.
 
         Returns:
@@ -124,7 +126,7 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
     @staticmethod
     def _compute_per_sample_grad_loss(
         model: nn.Module,
-        loss_fn: Callable,
+        loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
         targets: torch.Tensor,
     ) -> torch.Tensor:
@@ -132,9 +134,10 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
 
         Args:
             model: The neural network model.
-            loss_fn: Loss function callable.
-            inputs: Input tensor batch.
-            targets: Target tensor batch.
+            loss_fn: Loss function callable that takes (predictions, targets)
+                and returns a scalar loss tensor.
+            inputs: Input tensor batch of shape (batch_size, ...).
+            targets: Target tensor batch of shape (batch_size, ...).
 
         Returns:
             Per-sample loss gradients tensor.
@@ -153,20 +156,19 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
     @staticmethod
     def _compute_per_sample_gradient_norm_loss(
         model: nn.Module,
-        loss_fn: Callable,
+        loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
         targets: torch.Tensor,
         reduce: bool = True,
     ) -> torch.Tensor:
-        """
-        Compute per-sample gradient magnitudes for the loss function L(f(x), y)
-        using functorch. -> ∇_f L
+        """Compute per-sample gradient norms for the loss function (∇_f L).
 
         Args:
             model: The neural network model.
-            loss_fn: Loss function callable.
-            inputs: Input tensor batch.
-            targets: Target tensor batch.
+            loss_fn: Loss function callable that takes (predictions, targets)
+                and returns a scalar loss tensor.
+            inputs: Input tensor batch of shape (batch_size, ...).
+            targets: Target tensor batch of shape (batch_size, ...).
             reduce: If True, sum over batch. If False, return per-sample norms.
 
         Returns:

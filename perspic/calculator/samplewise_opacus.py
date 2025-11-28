@@ -193,9 +193,10 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
         Args:
             model: The neural network model.
-            loss_fn: Loss function callable.
-            inputs: Input tensor batch.
-            targets: Target tensor batch.
+            loss_fn: Loss function callable that takes (predictions, targets)
+                and returns a scalar loss tensor.
+            inputs: Input tensor batch of shape (batch_size, ...).
+            targets: Target tensor batch of shape (batch_size, ...).
 
         Returns:
             Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
@@ -277,9 +278,10 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
         Args:
             model: The neural network model.
-            loss_fn: Loss function callable.
-            inputs: Input tensor batch.
-            targets: Target tensor batch.
+            loss_fn: Loss function callable that takes (predictions, targets)
+                and returns a scalar loss tensor.
+            inputs: Input tensor batch of shape (batch_size, ...).
+            targets: Target tensor batch of shape (batch_size, ...).
             reduce: If True, sum over batch. If False, return per-sample norms.
 
         Returns:
