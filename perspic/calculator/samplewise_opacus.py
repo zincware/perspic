@@ -21,7 +21,7 @@ def _compute_batch_norm_grad_sample(
     layer: nn.modules.batchnorm._BatchNorm,
     activations: list[torch.Tensor],
     backprops: torch.Tensor,
-) -> dict[nn.Parameter, torch.Tensor]:
+) -> Dict[nn.Parameter, torch.Tensor]:
     """Compute per-sample gradients for BatchNorm layers in eval mode."""
     activations = activations[0]
     mean = layer.running_mean
@@ -62,7 +62,7 @@ def _compute_batch_norm_norm_sample(
     layer: nn.modules.batchnorm._BatchNorm,
     activations: list[torch.Tensor],
     backprops: torch.Tensor,
-) -> dict[nn.Parameter, torch.Tensor]:
+) -> Dict[nn.Parameter, torch.Tensor]:
     """Compute per-sample gradient norms for BatchNorm layers."""
     grads = _compute_batch_norm_grad_sample(layer, activations, backprops)
     return {param: grad.norm(2, dim=1) for param, grad in grads.items()}
@@ -175,15 +175,20 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
     This implementation uses Opacus's efficient per-sample gradient norm
     computation with support for BatchNorm layers in eval mode.
 
+    Args:
+        strict: If True, Opacus will validate that all layers are supported
+            for per-sample gradient computation. Defaults to False.
+
     Note:
         For models with BatchNorm, wrap calls with `BatchStatSnapshot` context
         manager to freeze running statistics, similar to the functorch calculator.
     """
 
-    __slots__ = ()
+    def __init__(self, strict: bool = False):
+        self.strict = strict
 
-    @staticmethod
     def compute(
+        self,
         model: nn.Module,
         loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
@@ -204,7 +209,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         out = {
             "batch_grad_norms_network": (
                 SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
-                    model, inputs
+                    model, inputs, strict=self.strict
                 )
             ),
             "batch_grad_norms_loss": (
@@ -218,7 +223,10 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
     @staticmethod
     def _compute_per_sample_gradient_norm_network(
-        model: nn.Module, inputs: torch.Tensor, reduce: bool = True
+        model: nn.Module,
+        inputs: torch.Tensor,
+        reduce: bool = True,
+        strict: bool = False,
     ) -> torch.Tensor:
         """Compute per-sample gradient norms for network parameters (∇_θ f).
 
@@ -229,11 +237,14 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             model: The neural network model.
             inputs: Input tensor batch of shape (batch_size, ...).
             reduce: If True, sum over batch. If False, return per-sample norms.
+            strict: If True, Opacus validates all layers are supported.
 
         Returns:
             If reduce=True: Scalar (sum of squared gradient norms).
             If reduce=False: Tensor (batch_size,) with per-sample squared norms.
         """
+        SamplewiseCalculatorOpacus._warn_if_batchnorm_training(model)
+
         # Temporarily disable in-place operations (incompatible with Opacus hooks)
         inplace_states = _disable_inplace_ops(model)
 
@@ -248,7 +259,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             for dim in range(output_dim):
                 single_output_model = _SingleOutputModel(model, dim)
                 gs_model = _GhostNormFastGradientClipping(
-                    single_output_model, strict=False, loss_reduction="sum"
+                    single_output_model, strict=strict, loss_reduction="sum"
                 )
 
                 gs_model.zero_grad()
@@ -259,7 +270,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 gs_model.remove_hooks()
 
             # Clean up leftover Opacus attributes from the original model
-            # _cleanup_opacus_leftovers(model)
+            _cleanup_opacus_leftovers(model)
 
             return total_sq_norms.sum() if reduce else total_sq_norms
         finally:
@@ -288,6 +299,8 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             If reduce=True: Scalar (sum of squared gradient norms).
             If reduce=False: Tensor (batch_size,) with per-sample squared norms.
         """
+        SamplewiseCalculatorOpacus._warn_if_batchnorm_training(model)
+
         outputs = model(inputs)
         outputs = outputs.detach().requires_grad_(True)
 

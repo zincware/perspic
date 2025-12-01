@@ -15,6 +15,7 @@ def analyzer(
     sample_wise_engine: Optional[str] = "opacus",
     disable_analyzer: bool = False,
     log_metrics: bool = True,
+    opacus_strict: bool = False,
     **model_kwargs
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -31,6 +32,9 @@ def analyzer(
         disable_analyzer: If True, wraps the module without adding analysis
             capabilities. Defaults to False. Mainly for testing purposes.
         log_metrics: If True, logs analysis metrics during training. Defaults to True.
+        opacus_strict: If True and using 'opacus' engine, Opacus will validate
+            that all layers are supported for per-sample gradient computation.
+            Defaults to False.
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -78,6 +82,7 @@ def analyzer(
             sample_wise_engine=sample_wise_engine,
             disable_analyzer=disable_analyzer,
             log_metrics=log_metrics,
+            opacus_strict=opacus_strict,
             **model_kwargs
         ):
             super().__init__(**model_kwargs)
@@ -88,10 +93,16 @@ def analyzer(
                     "sample_wise_engine must be either 'opacus' or 'functorch'"
                 )
 
+            if sample_wise_engine == "functorch" and opacus_strict:
+                raise ValueError(
+                    "opacus_strict=True is only valid when sample_wise_engine='opacus'. "
+                    "Either set sample_wise_engine='opacus' or remove opacus_strict."
+                )
+
             if sample_wise_engine == "functorch":
                 self.sample_calc = SamplewiseCalculatorFunctorch()
             elif sample_wise_engine == "opacus":
-                self.sample_calc = SamplewiseCalculatorOpacus()
+                self.sample_calc = SamplewiseCalculatorOpacus(strict=opacus_strict)
 
             self.linearizer = Linearizer()
             self.coupling_calc = CouplingCalculator()

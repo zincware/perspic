@@ -361,8 +361,9 @@ class TestSamplewiseCalculatorOpacus:
         y = torch.randint(0, 2, (batch_size,))
         loss_fn = nn.CrossEntropyLoss()
 
+        calc = SamplewiseCalculatorOpacus()
         with BatchStatSnapshot(model, X):
-            results = SamplewiseCalculatorOpacus.compute(model, loss_fn, X, y)
+            results = calc.compute(model, loss_fn, X, y)
 
         assert isinstance(results, dict)
         assert "batch_grad_norms_network" in results
@@ -405,8 +406,9 @@ class TestSamplewiseCalculatorOpacus:
             assert relu.inplace is True, "ReLU should have inplace=True before compute"
 
         # Run Opacus computation (this would crash without the fix)
+        calc = SamplewiseCalculatorOpacus()
         with BatchStatSnapshot(model, X):
-            results = SamplewiseCalculatorOpacus.compute(model, loss_fn, X, y)
+            results = calc.compute(model, loss_fn, X, y)
 
         # Verify inplace=True is restored after computation
         for relu in relu_modules:

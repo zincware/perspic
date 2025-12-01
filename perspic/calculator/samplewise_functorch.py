@@ -19,8 +19,8 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
         gradient computation.
     """
 
-    @staticmethod
     def compute(
+        self,
         model: nn.Module,
         loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
@@ -97,6 +97,8 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
             If reduce=True: Scalar (sum of squared gradient norms).
             If reduce=False: Tensor (batch_size,) with per-sample squared norms.
         """
+        SamplewiseCalculatorFunctorch._warn_if_batchnorm_training(model)
+
         # All samples simultaneously
         inputs = inputs.unsqueeze(1)  # Due to vmap
         per_sample_grads = (
@@ -175,6 +177,8 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
             If reduce=True: Scalar (sum of squared gradient norms).
             If reduce=False: Tensor (batch_size,) with per-sample squared norms.
         """
+        SamplewiseCalculatorFunctorch._warn_if_batchnorm_training(model)
+
         per_sample_loss_grads = (
             SamplewiseCalculatorFunctorch._compute_per_sample_grad_loss(
                 model, loss_fn, inputs, targets

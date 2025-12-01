@@ -128,6 +128,15 @@ class TestAnalyzerFactoryFunction:
         with pytest.raises(ValueError, match="sample_wise_engine must be either"):
             analyzer(simple_lightning_module, sample_wise_engine="invalid")
 
+    def test_opacus_strict_with_functorch_raises_error(self, simple_lightning_module):
+        """Test that opacus_strict=True with functorch engine raises ValueError."""
+        with pytest.raises(ValueError, match="opacus_strict=True is only valid"):
+            analyzer(
+                simple_lightning_module,
+                sample_wise_engine="functorch",
+                opacus_strict=True,
+            )
+
     def test_functorch_engine_initialization(self, simple_lightning_module):
         """Test that functorch engine initializes correctly."""
         model = analyzer(simple_lightning_module, sample_wise_engine="functorch")

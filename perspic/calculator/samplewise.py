@@ -1,5 +1,6 @@
 """Base class for sample-wise gradient norm calculators."""
 
+import warnings
 from abc import ABC, abstractmethod
 from typing import Callable, Dict
 
@@ -13,15 +14,36 @@ class SamplewiseCalculator(ABC):
     This class defines the interface for computing per-sample gradient norms.
     Subclasses must implement the abstract methods to provide specific
     implementations (e.g., using functorch, opacus, etc.).
-
-    All methods are static as they don't require instance state.
     """
 
-    __slots__ = ()  # No instance attributes needed
-
     @staticmethod
+    def _warn_if_batchnorm_training(model: nn.Module) -> None:
+        """Emit a warning if any BatchNorm layer is in training mode.
+
+        BatchNorm layers in training mode use batch statistics that create
+        coupling between samples, which breaks the per-sample gradient
+        computation. This function warns users who may have forgotten to use
+        the BatchStatSnapshot context manager.
+
+        Args:
+            model: The model to check for training-mode BatchNorm layers.
+        """
+        for module in model.modules():
+            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                if module.training:
+                    warnings.warn(
+                        "BatchNorm layer detected in training mode. Per-sample gradient"
+                        " norms may be incorrect due to batch statistics coupling. "
+                        "Use the BatchStatSnapshot context manager to freeze batch "
+                        "statistics for correct per-sample gradient computation.",
+                        UserWarning,
+                        stacklevel=4,
+                    )
+                    return  # Only warn once
+
     @abstractmethod
     def compute(
+        self,
         model: nn.Module,
         loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
