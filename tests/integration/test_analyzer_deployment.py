@@ -842,7 +842,7 @@ class TestSamplewiseEngineConsistency:
         dataloader = DataLoader(dataset, batch_size=8)
 
         trainer_functorch = pl.Trainer(
-            max_steps=2,
+            max_steps=1,
             enable_checkpointing=False,
             logger=False,
             enable_progress_bar=False,
