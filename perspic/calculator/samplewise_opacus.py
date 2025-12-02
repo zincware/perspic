@@ -100,20 +100,6 @@ class _GhostNormFastGradientClipping(GradSampleModuleFastGradientClipping):
                 )
 
 
-class _SingleOutputModel(nn.Module):
-    """Wrapper to extract a single output dimension from a model."""
-
-    __slots__ = ("base_model", "dim")
-
-    def __init__(self, base_model: nn.Module, dim: int):
-        super().__init__()
-        self.base_model = base_model
-        self.dim = dim
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.base_model(x)[:, self.dim]
-
-
 def _disable_inplace_ops(model: nn.Module) -> dict[nn.Module, bool]:
     """Temporarily disable in-place operations in activation modules.
 
@@ -167,6 +153,25 @@ def _cleanup_opacus_leftovers(model: nn.Module) -> None:
             delattr(param, "norm_sample")
         if hasattr(param, "summed_grad"):
             delattr(param, "summed_grad")
+
+
+def _reset_opacus_state(model: nn.Module) -> None:
+    """Reset Opacus state for reusing the wrapper between backward passes.
+
+    This clears activations and resets forward counters without removing hooks,
+    allowing efficient reuse of the GradSampleModule wrapper across multiple reuses.
+
+    Args:
+        model: The model wrapped by Opacus.
+    """
+    for module in model.modules():
+        if hasattr(module, "activations"):
+            module.activations = []
+    for param in model.parameters():
+        if hasattr(param, "_forward_counter"):
+            param._forward_counter = 0
+        if hasattr(param, "_norm_sample"):
+            delattr(param, "_norm_sample")
 
 
 class SamplewiseCalculatorOpacus(SamplewiseCalculator):
@@ -231,7 +236,8 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         """Compute per-sample gradient norms for network parameters (∇_θ f).
 
         Uses ghost clipping to compute ||∇_θ f(x_i)||² by iterating over
-        output dimensions.
+        output dimensions. The Opacus wrapper is created once and reused across
+        output dimensions for efficiency.
 
         Args:
             model: The neural network model.
@@ -256,18 +262,22 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
             total_sq_norms = torch.zeros(inputs.shape[0], device=inputs.device)
 
+            # Create wrapper once and reuse across output dimensions
+            gs_model = _GhostNormFastGradientClipping(
+                model, strict=strict, loss_reduction="sum"
+            )
+
             for dim in range(output_dim):
-                single_output_model = _SingleOutputModel(model, dim)
-                gs_model = _GhostNormFastGradientClipping(
-                    single_output_model, strict=strict, loss_reduction="sum"
-                )
+                # Reset Opacus state for fresh forward/backward pass
+                _reset_opacus_state(model)
 
                 gs_model.zero_grad()
-                out = gs_model(inputs)
+                out = gs_model(inputs)[:, dim]
                 out.sum().backward()
 
                 total_sq_norms += gs_model.get_norm_sample() ** 2
-                gs_model.remove_hooks()
+
+            gs_model.remove_hooks()
 
             # Clean up leftover Opacus attributes from the original model
             _cleanup_opacus_leftovers(model)
