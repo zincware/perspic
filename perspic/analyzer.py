@@ -7,6 +7,7 @@ from perspic.calculator.coupling import CouplingCalculator
 from perspic.calculator.linearizer import Linearizer
 from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
 from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
+from perspic.logger import LogarithmicWindowSchedule
 from perspic.utils import BatchStatSnapshot
 
 
@@ -16,6 +17,8 @@ def analyzer(
     disable_analyzer: bool = False,
     log_metrics: bool = True,
     opacus_strict: bool = False,
+    analyze_every: Optional[int] = None,
+    analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
     **model_kwargs
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -35,6 +38,11 @@ def analyzer(
         opacus_strict: If True and using 'opacus' engine, Opacus will validate
             that all layers are supported for per-sample gradient computation.
             Defaults to False.
+        analyze_every: If provided, run analysis every N steps (0, N, 2N, ...).
+            If None and no analysis_schedule, runs every step.
+        analysis_schedule: A LogarithmicWindowSchedule that defines which steps
+            to analyze. Created via `logarithmic_windows()`. If provided,
+            analysis runs only at the scheduled steps.
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -46,8 +54,18 @@ def analyzer(
         ValueError: If sample_wise_engine is not 'functorch' or 'opacus'.
         AttributeError: If the wrapped module doesn't have a 'criterion'
             attribute.
-        NotImplementedError: If sample_wise_engine='opacus' is selected
-            (not yet supported).
+
+    Examples:
+        # Analyze every step (default)
+        model = analyzer(MyModule, model=backbone, lr=0.01)
+
+        # Analyze every 100 steps
+        model = analyzer(MyModule, analyze_every=100, model=backbone, lr=0.01)
+
+        # Analyze at logarithmically spaced windows
+        from perspic import logarithmic_windows
+        schedule = logarithmic_windows(max_steps=10000, points_per_decade=5)
+        model = analyzer(MyModule, analysis_schedule=schedule, model=backbone, lr=0.01)
 
     Note:
         The lightning_module.__call__ method must contain the ENTIRE forward pass logic.
@@ -83,6 +101,8 @@ def analyzer(
             disable_analyzer=disable_analyzer,
             log_metrics=log_metrics,
             opacus_strict=opacus_strict,
+            analyze_every=analyze_every,
+            analysis_schedule=analysis_schedule,
             **model_kwargs
         ):
             super().__init__(**model_kwargs)
@@ -99,6 +119,9 @@ def analyzer(
                     "Either set sample_wise_engine='opacus' or remove opacus_strict."
                 )
 
+            if analyze_every is not None and analyze_every < 1:
+                raise ValueError("analyze_every must be a positive integer")
+
             if sample_wise_engine == "functorch":
                 self.sample_calc = SamplewiseCalculatorFunctorch()
             elif sample_wise_engine == "opacus":
@@ -108,6 +131,10 @@ def analyzer(
             self.coupling_calc = CouplingCalculator()
             self.disable_analyzer = disable_analyzer
             self.log_metrics = log_metrics
+
+            # Store scheduling options
+            self.analyze_every = analyze_every
+            self.analysis_schedule = analysis_schedule
 
             # Use manual optimization to control optimization steps
             if not self.automatic_optimization:
@@ -167,20 +194,35 @@ def analyzer(
 
             return output
 
+        def _should_analyze(self, step: int) -> bool:
+            """Determine if analysis should run at the given step."""
+            # If schedule provided, use it
+            if self.analysis_schedule is not None:
+                return self.analysis_schedule.should_analyze(step)
+            # If analyze_every provided, check interval
+            if self.analyze_every is not None:
+                return step % self.analyze_every == 0
+            # Default: analyze every step
+            return True
+
         def _before_training_step(self, batch, batch_idx):
             """Hook executed before the wrapped training step.
 
             Computes analysis metrics including sample-wise gradients and
-            linearization probes.
+            linearization probes. Only runs if the scheduler determines
+            this step should be analyzed.
 
             Args:
                 batch: Training batch containing input data and labels.
                 batch_idx: Index of the current batch.
 
             Returns:
-                Tuple of (samples_results, probe_results) containing computed
-                metrics.
+                None
             """
+            # Check if we should run analysis at this step
+            if not self._should_analyze(self.global_step):
+                return None
+
             x, y = batch
 
             with BatchStatSnapshot(self.model, x):
@@ -208,21 +250,25 @@ def analyzer(
                     learning_rate_of_virtual_step=1e-5,
                 )
 
-            # Log results
+            # Log results with fixed metric names
             if self.log_metrics:
-                self.log(
-                    "batch_grad_norms_network",
-                    samples_results["batch_grad_norms_network"],
-                )
-                self.log(
-                    "batch_grad_norms_loss",
-                    samples_results["batch_grad_norms_loss"],
-                )
-                self.log("loss_value", probe_results[0])
-                self.log("perturbed_loss_value", probe_results[1])
+                self.log("chi_net", samples_results["batch_grad_norms_network"])
+                self.log("chi_loss", samples_results["batch_grad_norms_loss"])
+                self.log("loss", probe_results[0])
+                self.log("perturbed_loss", probe_results[1])
                 self.log("delta_loss", probe_results[1] - probe_results[0])
-                self.log("actual_batch_size", x.shape[0])
-                self.log("coupling_value", coupling_value)
+                self.log("batch_size", x.shape[0])
+                self.log("coupling", coupling_value)
+                self.log("analysis_step", self.global_step)
+
+                # Log window tracking info if using logarithmic schedule
+                if self.analysis_schedule is not None:
+                    window_info = self.analysis_schedule.get_window_info(
+                        self.global_step
+                    )
+                    if window_info is not None:
+                        self.log("window_id", window_info["window_id"])
+                        self.log("window_center", window_info["window_center"])
 
             return None
 
@@ -238,4 +284,12 @@ def analyzer(
             """
             pass
 
-    return Analyzer(sample_wise_engine=sample_wise_engine, **model_kwargs)
+    return Analyzer(
+        sample_wise_engine=sample_wise_engine,
+        disable_analyzer=disable_analyzer,
+        log_metrics=log_metrics,
+        opacus_strict=opacus_strict,
+        analyze_every=analyze_every,
+        analysis_schedule=analysis_schedule,
+        **model_kwargs
+    )
