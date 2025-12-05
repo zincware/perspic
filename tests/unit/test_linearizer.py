@@ -39,12 +39,6 @@ def device(request):
     return torch.device(request.param)
 
 
-class TestLinearizer:
-    """Placeholder test class for linearizer-related tests."""
-
-    pass
-
-
 class TestMemoryUsageOfSaveLoad:
     """Test for memory usage overhead of Linearizer."""
 
