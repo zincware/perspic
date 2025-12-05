@@ -139,7 +139,7 @@ class Linearizer:
         buf = io.BytesIO(state_bytes)
         # ensure tensors map to the model device
         map_loc = device if device is not None else None
-        state = torch.load(buf, map_location=map_loc)
+        state = torch.load(buf, map_location=map_loc, weights_only=True)
         model.load_state_dict(state)
 
         return model
