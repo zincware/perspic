@@ -1,9 +1,11 @@
+import math
+
 import pytest
 import torch
 import torch.nn as nn
 
 from perspic import Linearizer
-import math
+
 
 @pytest.fixture
 def simple_model():
@@ -29,6 +31,7 @@ def make_complex_model():
 
 class TestLinearizer:
     """Tests for Linearizer linearizer functionality."""
+
     def test_simple_model_matches_analytical_gradient(self, simple_model):
         """Test that linearizer results match analytical first-order Taylor expansion."""
         torch.manual_seed(42)
@@ -42,7 +45,7 @@ class TestLinearizer:
         loss = criterion(simple_model(x), y)
         loss.backward()
         grad_norm_squared = sum(
-            (p.grad ** 2).sum().item()
+            (p.grad**2).sum().item()
             for p in simple_model.parameters()
             if p.grad is not None
         )
@@ -68,9 +71,9 @@ class TestLinearizer:
             tolerance = max(1e-5, abs(expected_delta) * 0.15)
             abs_error = abs(actual_delta - expected_delta)
 
-            assert abs_error < tolerance, (
-                f"eta={eta}: error={abs_error:.8e}, tolerance={tolerance:.8e}"
-            )
+            assert (
+                abs_error < tolerance
+            ), f"eta={eta}: error={abs_error:.8e}, tolerance={tolerance:.8e}"
 
     def test_complex_model_loss_delta_scales_linear(self):
         """Test that loss delta scales linearly with eta across multiple model initializations."""
@@ -104,6 +107,6 @@ class TestLinearizer:
 
         # Check that delta/eta is constant (linear scaling)
         ratios = [avg_deltas[eta] / eta for eta in etas]
-        assert math.isclose(max(ratios), min(ratios), rel_tol=0.05), (
-            f"Delta/eta ratios not constant: {dict(zip(etas, ratios))}"
-        )
+        assert math.isclose(
+            max(ratios), min(ratios), rel_tol=0.05
+        ), f"Delta/eta ratios not constant: {dict(zip(etas, ratios))}"
