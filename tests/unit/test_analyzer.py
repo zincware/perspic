@@ -10,7 +10,8 @@ import torch.nn.functional as F
 
 from perspic.analyzer import analyzer
 from perspic.calculator.linearizer import Linearizer
-from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
 
 
 # Test fixtures
@@ -127,16 +128,28 @@ class TestAnalyzerFactoryFunction:
         with pytest.raises(ValueError, match="sample_wise_engine must be either"):
             analyzer(simple_lightning_module, sample_wise_engine="invalid")
 
+    def test_opacus_strict_with_functorch_raises_error(self, simple_lightning_module):
+        """Test that opacus_strict=True with functorch engine raises ValueError."""
+        with pytest.raises(ValueError, match="opacus_strict=True is only valid"):
+            analyzer(
+                simple_lightning_module,
+                sample_wise_engine="functorch",
+                opacus_strict=True,
+            )
+
     def test_functorch_engine_initialization(self, simple_lightning_module):
         """Test that functorch engine initializes correctly."""
         model = analyzer(simple_lightning_module, sample_wise_engine="functorch")
 
         assert isinstance(model.sample_calc, SamplewiseCalculatorFunctorch)
 
-    def test_opacus_engine_not_implemented(self, simple_lightning_module):
-        """Test that opacus engine raises NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="opacus.*not supported"):
-            analyzer(simple_lightning_module, sample_wise_engine="opacus")
+    def test_opacus_engine_initialization(self, simple_lightning_module):
+        """Test that opacus engine initializes correctly."""
+        model = analyzer(simple_lightning_module, sample_wise_engine="opacus")
+
+        from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
+
+        assert isinstance(model.sample_calc, SamplewiseCalculatorOpacus)
 
     def test_disable_analyzer_flag(self, simple_lightning_module):
         """Test that disable_analyzer flag is stored correctly."""
@@ -207,7 +220,7 @@ class TestAnalyzerInitialization:
 class TestBeforeTrainingStepHook:
     """Test _before_training_step hook method."""
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_calls_sample_calc_compute(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -233,7 +246,7 @@ class TestBeforeTrainingStepHook:
         assert torch.equal(call_args[0][2], x)  # x argument
         assert torch.equal(call_args[0][3], y)  # y argument
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_calls_linearizer_probe(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -266,7 +279,7 @@ class TestBeforeTrainingStepHook:
 
         assert model.linearizer.eta_array == custom_etas
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_logs_metrics_when_enabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -290,16 +303,17 @@ class TestBeforeTrainingStepHook:
         assert model.log.call_count > 0
         logged_metrics = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
-        assert "batch_grad_norms_network" in logged_metrics
-        assert "batch_grad_norms_loss" in logged_metrics
+        assert "chi_net" in logged_metrics
+        assert "chi_loss" in logged_metrics
+        assert "coupling" in logged_metrics
+        assert "batch_size" in logged_metrics
+        assert "analysis_step" in logged_metrics
+        assert "loss" in logged_metrics
         assert any(name.startswith("lin_loss_before_eta_") for name in logged_metrics)
         assert any(name.startswith("lin_loss_after_eta_") for name in logged_metrics)
         assert any(name.startswith("lin_loss_delta_eta_") for name in logged_metrics)
-        assert "loss_value" in logged_metrics
-        assert "actual_batch_size" in logged_metrics
-        assert "coupling_value" in logged_metrics
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_no_logging_when_disabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -323,7 +337,7 @@ class TestBeforeTrainingStepHook:
         # Log should not be called
         model.log.assert_not_called()
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_batch_unpacking(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -399,7 +413,7 @@ class TestTrainingStepBehavior:
         # Verify _after_training_step was not called
         model._after_training_step.assert_not_called()
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_hooks_called_when_enabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -505,7 +519,7 @@ class TestOptimizationControl:
 class TestMetricLogging:
     """Test metric logging behavior."""
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_correct_metric_names(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -527,14 +541,17 @@ class TestMetricLogging:
 
         logged_names = [call[0][0] for call in model.log.call_args_list]
 
-        assert "batch_grad_norms_network" in logged_names
-        assert "batch_grad_norms_loss" in logged_names
+        assert "chi_net" in logged_names
+        assert "chi_loss" in logged_names
+        assert "loss" in logged_names
+        assert "batch_size" in logged_names
+        assert "coupling" in logged_names
+        assert "analysis_step" in logged_names
         assert any(name.startswith("lin_loss_before_eta_") for name in logged_names)
         assert any(name.startswith("lin_loss_after_eta_") for name in logged_names)
-        assert "loss_value" in logged_names
-        assert "actual_batch_size" in logged_names
+        assert any(name.startswith("lin_loss_delta_eta_") for name in logged_names)
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_correct_metric_values(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -555,10 +572,160 @@ class TestMetricLogging:
         model._before_training_step((x, y), 0)
 
         logged_values = {call[0][0]: call[0][1] for call in model.log.call_args_list}
-        assert torch.allclose(
-            logged_values["batch_grad_norms_network"], torch.tensor(1.5)
-        )
-        assert torch.allclose(logged_values["batch_grad_norms_loss"], torch.tensor(2.5))
+
+        assert torch.allclose(logged_values["chi_net"], torch.tensor(1.5))
+        assert torch.allclose(logged_values["chi_loss"], torch.tensor(2.5))
         assert logged_values["lin_loss_before_eta_1e-03"] == 1.0
         assert logged_values["lin_loss_after_eta_1e-03"] == pytest.approx(1.05)
-        assert logged_values["actual_batch_size"] == 4
+        assert logged_values["batch_size"] == 4
+
+
+class TestAnalyzerScheduling:
+    """Test analysis scheduling in the Analyzer."""
+
+    def test_analyze_every_stored(self, simple_lightning_module):
+        """Test analyze_every parameter is stored."""
+        model = analyzer(simple_lightning_module, analyze_every=10)
+        assert model.analyze_every == 10
+
+    def test_analyze_every_none_default(self, simple_lightning_module):
+        """Test analyze_every defaults to None."""
+        model = analyzer(simple_lightning_module)
+        assert model.analyze_every is None
+
+    def test_analyze_every_invalid_raises_error(self, simple_lightning_module):
+        """Test analyze_every < 1 raises ValueError."""
+        with pytest.raises(ValueError, match="analyze_every must be a positive"):
+            analyzer(simple_lightning_module, analyze_every=0)
+
+    def test_analysis_schedule_stored(self, simple_lightning_module):
+        """Test analysis_schedule parameter is stored."""
+        from perspic.logger import logarithmic_windows
+
+        schedule = logarithmic_windows(max_steps=100)
+        model = analyzer(simple_lightning_module, analysis_schedule=schedule)
+        assert model.analysis_schedule is schedule
+
+    def test_analysis_schedule_none_default(self, simple_lightning_module):
+        """Test analysis_schedule defaults to None."""
+        model = analyzer(simple_lightning_module)
+        assert model.analysis_schedule is None
+
+    def test_should_analyze_default_true(self, simple_lightning_module):
+        """Test _should_analyze returns True by default."""
+        model = analyzer(simple_lightning_module)
+        assert model._should_analyze(0) is True
+        assert model._should_analyze(42) is True
+
+    def test_should_analyze_with_analyze_every(self, simple_lightning_module):
+        """Test _should_analyze respects analyze_every."""
+        model = analyzer(simple_lightning_module, analyze_every=10)
+        assert model._should_analyze(0) is True
+        assert model._should_analyze(10) is True
+        assert model._should_analyze(5) is False
+
+    def test_should_analyze_with_schedule(self, simple_lightning_module):
+        """Test _should_analyze uses schedule when provided."""
+        from perspic.logger import LogarithmicWindowSchedule
+
+        schedule = LogarithmicWindowSchedule(
+            windows={0: [0, 1]},
+            window_centers={0: 0},
+            step_to_window={0: 0, 1: 0},
+        )
+        model = analyzer(simple_lightning_module, analysis_schedule=schedule)
+        assert model._should_analyze(0) is True
+        assert model._should_analyze(1) is True
+        assert model._should_analyze(2) is False
+
+    def test_schedule_takes_precedence(self, simple_lightning_module):
+        """Test analysis_schedule takes precedence over analyze_every."""
+        from perspic.logger import LogarithmicWindowSchedule
+
+        schedule = LogarithmicWindowSchedule(
+            windows={0: [5]},
+            window_centers={0: 5},
+            step_to_window={5: 0},
+        )
+        model = analyzer(
+            simple_lightning_module, analyze_every=10, analysis_schedule=schedule
+        )
+        # analyze_every would say True for 0, but schedule says False
+        assert model._should_analyze(0) is False
+        assert model._should_analyze(5) is True
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "probe_train_step")
+    def test_before_hook_skipped_when_not_scheduled(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """Test _before_training_step skips analysis when not scheduled."""
+        model = analyzer(simple_lightning_module, analyze_every=10)
+        model._global_step = 5  # Not a multiple of 10
+
+        # Mock global_step property
+        type(model).global_step = property(lambda self: 5)
+
+        model._before_training_step(sample_batch, 0)
+
+        mock_compute.assert_not_called()
+        mock_probe.assert_not_called()
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "probe_train_step")
+    def test_logs_window_info_with_schedule(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """Test window_id, window_center, and window_width logged when schedule provided."""
+        from perspic.logger import LogarithmicWindowSchedule
+
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+        }
+
+        schedule = LogarithmicWindowSchedule(
+            windows={0: [0]},
+            window_centers={0: 0},
+            step_to_window={0: 0},
+        )
+        model = analyzer(
+            simple_lightning_module, analysis_schedule=schedule, log_metrics=True
+        )
+        model.log = Mock()
+        type(model).global_step = property(lambda self: 0)
+
+        model._before_training_step(sample_batch, 0)
+
+        logged_names = [call[0][0] for call in model.log.call_args_list]
+        assert "window_id" in logged_names
+        assert "window_center" in logged_names
+        assert "window_width" in logged_names
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "probe_train_step")
+    def test_no_window_info_without_schedule(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """Test window_id, window_center, and window_width not logged without schedule."""
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = {
+            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+        }
+
+        model = analyzer(simple_lightning_module, log_metrics=True)
+        model.log = Mock()
+        type(model).global_step = property(lambda self: 0)
+
+        model._before_training_step(sample_batch, 0)
+
+        logged_names = [call[0][0] for call in model.log.call_args_list]
+        assert "window_id" not in logged_names
+        assert "window_center" not in logged_names
+        assert "window_width" not in logged_names

@@ -5,15 +5,20 @@ import pytorch_lightning as pl
 
 from perspic.calculator.coupling import CouplingCalculator
 from perspic.calculator.linearizer import Linearizer
-from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
+from perspic.logger import LogarithmicWindowSchedule
 from perspic.utils import BatchStatSnapshot
 
 
 def analyzer(
     lightning_module: pl.LightningModule,
-    sample_wise_engine: Optional[str] = "functorch",
+    sample_wise_engine: Optional[str] = "opacus",
     disable_analyzer: bool = False,
     log_metrics: bool = True,
+    opacus_strict: bool = False,
+    analyze_every: Optional[int] = None,
+    analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
     linearizing_lrs: list[float] = [1e-3],
     **model_kwargs,
 ):
@@ -27,12 +32,22 @@ def analyzer(
         lightning_module: A PyTorch Lightning module class to wrap with
             analysis features.
         sample_wise_engine: Engine for computing sample-wise gradients.
-            Options: 'functorch' or 'opacus'. Defaults to 'functorch'.
+            Options: 'functorch' or 'opacus'. Defaults to 'opacus'.
         disable_analyzer: If True, wraps the module without adding analysis
             capabilities. Defaults to False. Mainly for testing purposes.
         log_metrics: If True, logs analysis metrics during training. Defaults to True.
-        linearizing_lrs: List of learning rates for linear probing steps. Defaults to
-            [1e-3].
+        opacus_strict: If True and using 'opacus' engine, Opacus will validate
+            that all layers are supported for per-sample gradient computation.
+            Defaults to False.
+        analyze_every: If provided, run analysis every N steps (0, N, 2N, ...).
+            If None and no analysis_schedule, runs every step.
+        analysis_schedule: A LogarithmicWindowSchedule that defines which steps
+            to analyze. Created via `logarithmic_windows()`. If provided,
+            analysis runs only at the scheduled steps.
+            If both analyze_every and analysis_schedule are provided, analysis_schedule
+            takes precedence.
+        linearizing_lrs: List of learning rates for linearization probing.
+            Defaults to [1e-3].
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -44,8 +59,18 @@ def analyzer(
         ValueError: If sample_wise_engine is not 'functorch' or 'opacus'.
         AttributeError: If the wrapped module doesn't have a 'criterion'
             attribute.
-        NotImplementedError: If sample_wise_engine='opacus' is selected
-            (not yet supported).
+
+    Examples:
+        # Analyze every step (default)
+        model = analyzer(MyModule, model=backbone, lr=0.01)
+
+        # Analyze every 100 steps
+        model = analyzer(MyModule, analyze_every=100, model=backbone, lr=0.01)
+
+        # Analyze at logarithmically spaced windows
+        from perspic import logarithmic_windows
+        schedule = logarithmic_windows(max_steps=10000, points_per_decade=5)
+        model = analyzer(MyModule, analysis_schedule=schedule, model=backbone, lr=0.01)
 
     Note:
         The lightning_module.__call__ method must contain the ENTIRE forward pass logic.
@@ -80,6 +105,9 @@ def analyzer(
             sample_wise_engine=sample_wise_engine,
             disable_analyzer=disable_analyzer,
             log_metrics=log_metrics,
+            opacus_strict=opacus_strict,
+            analyze_every=analyze_every,
+            analysis_schedule=analysis_schedule,
             linearizing_lrs=linearizing_lrs,
             **model_kwargs,
         ):
@@ -91,17 +119,28 @@ def analyzer(
                     "sample_wise_engine must be either 'opacus' or 'functorch'"
                 )
 
+            if sample_wise_engine == "functorch" and opacus_strict:
+                raise ValueError(
+                    "opacus_strict=True is only valid when sample_wise_engine='opacus'. "
+                    "Either set sample_wise_engine='opacus' or remove opacus_strict."
+                )
+
+            if analyze_every is not None and analyze_every < 1:
+                raise ValueError("analyze_every must be a positive integer")
+
             if sample_wise_engine == "functorch":
                 self.sample_calc = SamplewiseCalculatorFunctorch()
             elif sample_wise_engine == "opacus":
-                raise NotImplementedError(
-                    "sample_wise_engine='opacus' is not supported yet."
-                )
+                self.sample_calc = SamplewiseCalculatorOpacus(strict=opacus_strict)
 
             self.linearizer = Linearizer(eta_array=linearizing_lrs)
             self.coupling_calc = CouplingCalculator()
             self.disable_analyzer = disable_analyzer
             self.log_metrics = log_metrics
+
+            # Store scheduling options
+            self.analyze_every = analyze_every
+            self.analysis_schedule = analysis_schedule
 
             # Use manual optimization to control optimization steps
             if not self.automatic_optimization:
@@ -161,20 +200,35 @@ def analyzer(
 
             return output
 
+        def _should_analyze(self, step: int) -> bool:
+            """Determine if analysis should run at the given step."""
+            # If schedule provided, use it
+            if self.analysis_schedule is not None:
+                return self.analysis_schedule.should_analyze(step)
+            # If analyze_every provided, check interval
+            if self.analyze_every is not None:
+                return step % self.analyze_every == 0
+            # Default: analyze every step
+            return True
+
         def _before_training_step(self, batch, batch_idx):
             """Hook executed before the wrapped training step.
 
             Computes analysis metrics including sample-wise gradients and
-            linearization probes.
+            linearization probes. Only runs if the scheduler determines
+            this step should be analyzed.
 
             Args:
                 batch: Training batch containing input data and labels.
                 batch_idx: Index of the current batch.
 
             Returns:
-                Tuple of (samples_results, probe_results) containing computed
-                metrics.
+                None
             """
+            # Check if we should run analysis at this step
+            if not self._should_analyze(self.global_step):
+                return None
+
             x, y = batch
 
             with BatchStatSnapshot(self.model, x):
@@ -199,19 +253,16 @@ def analyzer(
                     loss_after=list(probe_results.values())[0][1],
                     chi_loss=samples_results["batch_grad_norms_loss"],
                     chi_net=samples_results["batch_grad_norms_network"],
-                    learning_rate_of_virtual_step=1e-5,
+                    learning_rate_of_virtual_step=list(probe_results.keys())[0],
                 )
 
-            # Log results
+            # Log results with fixed metric names
             if self.log_metrics:
-                self.log(
-                    "batch_grad_norms_network",
-                    samples_results["batch_grad_norms_network"],
-                )
-                self.log(
-                    "batch_grad_norms_loss",
-                    samples_results["batch_grad_norms_loss"],
-                )
+                self.log("chi_net", samples_results["batch_grad_norms_network"])
+                self.log("chi_loss", samples_results["batch_grad_norms_loss"])
+                self.log("coupling", coupling_value)
+                self.log("batch_size", x.shape[0])
+                self.log("analysis_step", self.global_step)
                 for eta, (loss, perturbed_loss) in probe_results.items():
                     eta_str = f"{eta:.0e}"
                     self.log(f"lin_loss_before_eta_{eta_str}", loss)
@@ -221,9 +272,17 @@ def analyzer(
                             f"lin_loss_delta_eta_{eta_str}",
                             perturbed_loss - loss,
                         )
-                self.log("loss_value", probe_results[list(probe_results.keys())[0]][0])
-                self.log("actual_batch_size", x.shape[0])
-                self.log("coupling_value", coupling_value)
+                self.log("loss", probe_results[list(probe_results.keys())[0]][0])
+
+                # Log window tracking info if using logarithmic schedule
+                if self.analysis_schedule is not None:
+                    window_info = self.analysis_schedule.get_window_info(
+                        self.global_step
+                    )
+                    if window_info is not None:
+                        self.log("window_id", window_info["window_id"])
+                        self.log("window_center", window_info["window_center"])
+                        self.log("window_width", window_info["window_width"])
 
             return None
 
@@ -239,4 +298,12 @@ def analyzer(
             """
             pass
 
-    return Analyzer(sample_wise_engine=sample_wise_engine, **model_kwargs)
+    return Analyzer(
+        sample_wise_engine=sample_wise_engine,
+        disable_analyzer=disable_analyzer,
+        log_metrics=log_metrics,
+        opacus_strict=opacus_strict,
+        analyze_every=analyze_every,
+        analysis_schedule=analysis_schedule,
+        **model_kwargs,
+    )
