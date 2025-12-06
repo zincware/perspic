@@ -135,7 +135,7 @@ def logarithmic_windows(
         if center + window_size - 1 > max_steps:
             continue
 
-        # Generate steps in this window (after the center point)
+        # Generate steps in this window (starting from the center point)
         window_steps = [center + offset for offset in range(window_size)]
 
         if window_steps:  # Only add non-empty windows
