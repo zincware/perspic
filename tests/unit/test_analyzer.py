@@ -10,7 +10,8 @@ import torch.nn.functional as F
 
 from perspic.analyzer import analyzer
 from perspic.calculator.linearizer import Linearizer
-from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
+from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
 
 
 # Test fixtures
@@ -127,16 +128,28 @@ class TestAnalyzerFactoryFunction:
         with pytest.raises(ValueError, match="sample_wise_engine must be either"):
             analyzer(simple_lightning_module, sample_wise_engine="invalid")
 
+    def test_opacus_strict_with_functorch_raises_error(self, simple_lightning_module):
+        """Test that opacus_strict=True with functorch engine raises ValueError."""
+        with pytest.raises(ValueError, match="opacus_strict=True is only valid"):
+            analyzer(
+                simple_lightning_module,
+                sample_wise_engine="functorch",
+                opacus_strict=True,
+            )
+
     def test_functorch_engine_initialization(self, simple_lightning_module):
         """Test that functorch engine initializes correctly."""
         model = analyzer(simple_lightning_module, sample_wise_engine="functorch")
 
         assert isinstance(model.sample_calc, SamplewiseCalculatorFunctorch)
 
-    def test_opacus_engine_not_implemented(self, simple_lightning_module):
-        """Test that opacus engine raises NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="opacus.*not supported"):
-            analyzer(simple_lightning_module, sample_wise_engine="opacus")
+    def test_opacus_engine_initialization(self, simple_lightning_module):
+        """Test that opacus engine initializes correctly."""
+        model = analyzer(simple_lightning_module, sample_wise_engine="opacus")
+
+        from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
+
+        assert isinstance(model.sample_calc, SamplewiseCalculatorOpacus)
 
     def test_disable_analyzer_flag(self, simple_lightning_module):
         """Test that disable_analyzer flag is stored correctly."""
@@ -207,7 +220,7 @@ class TestAnalyzerInitialization:
 class TestBeforeTrainingStepHook:
     """Test _before_training_step hook method."""
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_calls_sample_calc_compute(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -231,7 +244,7 @@ class TestBeforeTrainingStepHook:
         assert torch.equal(call_args[0][2], x)  # x argument
         assert torch.equal(call_args[0][3], y)  # y argument
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_calls_linearizer_probe(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -256,7 +269,7 @@ class TestBeforeTrainingStepHook:
         assert torch.equal(call_kwargs["y"], y)
         assert call_kwargs["eta"] == 1e-5
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_logs_metrics_when_enabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -286,7 +299,7 @@ class TestBeforeTrainingStepHook:
         assert "delta_loss" in logged_metrics
         assert "coupling_value" in logged_metrics
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_no_logging_when_disabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -307,7 +320,7 @@ class TestBeforeTrainingStepHook:
         # Log should not be called
         model.log.assert_not_called()
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_batch_unpacking(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -381,7 +394,7 @@ class TestTrainingStepBehavior:
         # Verify _after_training_step was not called
         model._after_training_step.assert_not_called()
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_hooks_called_when_enabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -485,7 +498,7 @@ class TestOptimizationControl:
 class TestMetricLogging:
     """Test metric logging behavior."""
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_correct_metric_names(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
@@ -511,7 +524,7 @@ class TestMetricLogging:
         assert "perturbed_loss_value" in logged_names
         assert "actual_batch_size" in logged_names
 
-    @patch.object(SamplewiseCalculatorFunctorch, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_correct_metric_values(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch

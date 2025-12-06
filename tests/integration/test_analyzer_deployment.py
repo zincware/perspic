@@ -138,15 +138,24 @@ def variable_batch_dataloader():
 class TestTrainingTrajectoryPreservation:
     """Critical tests: Verify analyzer doesn't change training trajectory."""
 
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
     def test_enabled_analyzer_matches_disabled_single_step(
-        self, simple_lightning_module
+        self, simple_lightning_module, sample_wise_engine
     ):
         """Enabled analyzer produces same loss as disabled (single step)."""
         torch.manual_seed(42)
-        model_disabled = analyzer(simple_lightning_module, disable_analyzer=True)
+        model_disabled = analyzer(
+            simple_lightning_module,
+            sample_wise_engine=sample_wise_engine,
+            disable_analyzer=True,
+        )
 
         torch.manual_seed(42)
-        model_enabled = analyzer(simple_lightning_module, disable_analyzer=False)
+        model_enabled = analyzer(
+            simple_lightning_module,
+            sample_wise_engine=sample_wise_engine,
+            disable_analyzer=False,
+        )
 
         model_initial_ref = copy.deepcopy(model_enabled)
 
@@ -185,15 +194,24 @@ class TestTrainingTrajectoryPreservation:
         for p_dis, p_en in zip(model_disabled.parameters(), model_enabled.parameters()):
             assert torch.allclose(p_dis, p_en, atol=1e-5), "Parameters diverged!"
 
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
     def test_enabled_analyzer_matches_disabled_multi_step(
-        self, simple_lightning_module
+        self, simple_lightning_module, sample_wise_engine
     ):
         """Enabled analyzer produces same loss as disabled (multiple steps)."""
         torch.manual_seed(42)
-        model_disabled = analyzer(simple_lightning_module, disable_analyzer=True)
+        model_disabled = analyzer(
+            simple_lightning_module,
+            sample_wise_engine=sample_wise_engine,
+            disable_analyzer=True,
+        )
 
         torch.manual_seed(42)
-        model_enabled = analyzer(simple_lightning_module, disable_analyzer=False)
+        model_enabled = analyzer(
+            simple_lightning_module,
+            sample_wise_engine=sample_wise_engine,
+            disable_analyzer=False,
+        )
 
         model_initial_ref = copy.deepcopy(model_enabled)
 
@@ -302,10 +320,11 @@ class TestAnalyzerEndToEnd:
 class TestModelCompatibility:
     """Test with different model architectures."""
 
-    def test_with_simple_mlp(self, simple_lightning_module):
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
+    def test_with_simple_mlp(self, simple_lightning_module, sample_wise_engine):
         """Works with simple MLP."""
         torch.manual_seed(42)
-        model = analyzer(simple_lightning_module)
+        model = analyzer(simple_lightning_module, sample_wise_engine=sample_wise_engine)
 
         batch = (torch.randn(4, 10), torch.randint(0, 2, (4,)))
         dataset = TensorDataset(*batch)
@@ -322,10 +341,11 @@ class TestModelCompatibility:
         # Should complete without errors
         assert True
 
-    def test_with_batchnorm_model(self, batchnorm_module):
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
+    def test_with_batchnorm_model(self, batchnorm_module, sample_wise_engine):
         """Works with BatchNorm layers."""
         torch.manual_seed(42)
-        model = analyzer(batchnorm_module)
+        model = analyzer(batchnorm_module, sample_wise_engine=sample_wise_engine)
 
         # Train mode
         model.train()
@@ -347,10 +367,13 @@ class TestModelCompatibility:
         # Should complete without errors
         assert True
 
-    def test_with_dropout_residual_model(self, dropout_residual_module):
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
+    def test_with_dropout_residual_model(
+        self, dropout_residual_module, sample_wise_engine
+    ):
         """Works with Dropout and residual connections."""
         torch.manual_seed(42)
-        model = analyzer(dropout_residual_module)
+        model = analyzer(dropout_residual_module, sample_wise_engine=sample_wise_engine)
 
         model.train()
         batch = (torch.randn(4, 10), torch.randint(0, 2, (4,)))
@@ -497,11 +520,12 @@ class TestPyTorchIntegration:
 class TestMemoryAndDevices:
     """Memory management and device handling."""
 
-    def test_no_memory_leak(self, simple_lightning_module):
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
+    def test_no_memory_leak(self, simple_lightning_module, sample_wise_engine):
         """No memory leak over multiple training steps."""
 
         torch.manual_seed(42)
-        model = analyzer(simple_lightning_module)
+        model = analyzer(simple_lightning_module, sample_wise_engine=sample_wise_engine)
 
         # Run many steps
         batch = (torch.randn(200, 10), torch.randint(0, 2, (200,)))
@@ -547,10 +571,11 @@ class TestMemoryAndDevices:
             f"from {initial_mem:.2f} MB to {final_mem:.2f} MB"
         )
 
-    def test_cpu_training(self, simple_lightning_module):
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
+    def test_cpu_training(self, simple_lightning_module, sample_wise_engine):
         """Works on CPU."""
         torch.manual_seed(42)
-        model = analyzer(simple_lightning_module)
+        model = analyzer(simple_lightning_module, sample_wise_engine=sample_wise_engine)
         model = model.to("cpu")
 
         batch = (torch.randn(4, 10).to("cpu"), torch.randint(0, 2, (4,)).to("cpu"))
@@ -570,10 +595,11 @@ class TestMemoryAndDevices:
             assert param.device.type == "cpu"
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_gpu_training(self, simple_lightning_module):
+    @pytest.mark.parametrize("sample_wise_engine", ["functorch", "opacus"])
+    def test_gpu_training(self, simple_lightning_module, sample_wise_engine):
         """Works on GPU."""
         torch.manual_seed(42)
-        model = analyzer(simple_lightning_module)
+        model = analyzer(simple_lightning_module, sample_wise_engine=sample_wise_engine)
 
         # Don't manually move to GPU - let Trainer handle it
         batch = (torch.randn(4, 10), torch.randint(0, 2, (4,)))
@@ -660,3 +686,263 @@ class TestManualOptimization:
 
         # Verify delegation happened
         assert model.delegate_optimization is True
+
+
+class TestSamplewiseEngineConsistency:
+    """Tests that functorch and opacus engines produce consistent results."""
+
+    def test_engines_produce_same_gradient_norms_simple_mlp(self):
+        """Both engines compute the same gradient norms for a simple MLP."""
+
+        class SimpleMLP(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Sequential(
+                    nn.Linear(10, 20),
+                    nn.ReLU(),
+                    nn.Linear(20, 2),
+                )
+                self.criterion = F.cross_entropy
+
+            def forward(self, x):
+                return self.model(x)
+
+            def training_step(self, batch, batch_idx):
+                x, y = batch
+                logits = self(x)
+                loss = self.criterion(logits, y)
+                return loss
+
+            def configure_optimizers(self):
+                return torch.optim.Adam(self.parameters(), lr=0.001)
+
+        # Track logged metrics with callback
+        class MetricsTracker(pl.Callback):
+            def __init__(self):
+                self.metrics = []
+
+            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+                # Capture the logged metrics
+                self.metrics.append(
+                    {
+                        "batch_grad_norms_network": trainer.callback_metrics.get(
+                            "batch_grad_norms_network"
+                        ),
+                        "batch_grad_norms_loss": trainer.callback_metrics.get(
+                            "batch_grad_norms_loss"
+                        ),
+                    }
+                )
+
+        # Run with functorch
+        torch.manual_seed(42)
+        model_functorch = analyzer(SimpleMLP, sample_wise_engine="functorch")
+        tracker_functorch = MetricsTracker()
+
+        torch.manual_seed(100)
+        batch = (torch.randn(8, 10), torch.randint(0, 2, (8,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=8)
+
+        trainer_functorch = pl.Trainer(
+            max_steps=1,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+            callbacks=[tracker_functorch],
+        )
+        trainer_functorch.fit(model_functorch, dataloader)
+
+        # Run with opacus (same seed for identical model initialization)
+        torch.manual_seed(42)
+        model_opacus = analyzer(SimpleMLP, sample_wise_engine="opacus")
+        tracker_opacus = MetricsTracker()
+
+        # Use same dataloader (recreate with same seed)
+        torch.manual_seed(100)
+        batch = (torch.randn(8, 10), torch.randint(0, 2, (8,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=8)
+
+        trainer_opacus = pl.Trainer(
+            max_steps=1,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+            callbacks=[tracker_opacus],
+        )
+        trainer_opacus.fit(model_opacus, dataloader)
+
+        # Compare gradient norms
+        functorch_network = tracker_functorch.metrics[0]["batch_grad_norms_network"]
+        opacus_network = tracker_opacus.metrics[0]["batch_grad_norms_network"]
+        functorch_loss = tracker_functorch.metrics[0]["batch_grad_norms_loss"]
+        opacus_loss = tracker_opacus.metrics[0]["batch_grad_norms_loss"]
+
+        assert torch.allclose(functorch_network, opacus_network, atol=1e-5), (
+            f"Network gradient norms differ: functorch={functorch_network}, "
+            f"opacus={opacus_network}"
+        )
+        assert torch.allclose(functorch_loss, opacus_loss, atol=1e-5), (
+            f"Loss gradient norms differ: functorch={functorch_loss}, "
+            f"opacus={opacus_loss}"
+        )
+
+    def test_engines_produce_same_gradient_norms_batchnorm(self):
+        """Both engines compute the same gradient norms for a model with BatchNorm."""
+
+        class BatchNormMLP(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Sequential(
+                    nn.Linear(10, 20),
+                    nn.BatchNorm1d(20),
+                    nn.ReLU(),
+                    nn.Linear(20, 2),
+                )
+                self.criterion = F.cross_entropy
+
+            def forward(self, x):
+                return self.model(x)
+
+            def training_step(self, batch, batch_idx):
+                x, y = batch
+                logits = self(x)
+                loss = self.criterion(logits, y)
+                return loss
+
+            def configure_optimizers(self):
+                return torch.optim.Adam(self.parameters(), lr=0.001)
+
+        # Track logged metrics with callback
+        class MetricsTracker(pl.Callback):
+            def __init__(self):
+                self.metrics = []
+
+            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+                self.metrics.append(
+                    {
+                        "batch_grad_norms_network": trainer.callback_metrics.get(
+                            "batch_grad_norms_network"
+                        ),
+                        "batch_grad_norms_loss": trainer.callback_metrics.get(
+                            "batch_grad_norms_loss"
+                        ),
+                    }
+                )
+
+        # Run with functorch
+        torch.manual_seed(42)
+        model_functorch = analyzer(BatchNormMLP, sample_wise_engine="functorch")
+        tracker_functorch = MetricsTracker()
+
+        torch.manual_seed(100)
+        batch = (torch.randn(8, 10), torch.randint(0, 2, (8,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=8)
+
+        trainer_functorch = pl.Trainer(
+            max_steps=1,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+            callbacks=[tracker_functorch],
+        )
+        trainer_functorch.fit(model_functorch, dataloader)
+
+        # Run with opacus
+        torch.manual_seed(42)
+        model_opacus = analyzer(BatchNormMLP, sample_wise_engine="opacus")
+        tracker_opacus = MetricsTracker()
+
+        torch.manual_seed(100)
+        batch = (torch.randn(8, 10), torch.randint(0, 2, (8,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=8)
+
+        trainer_opacus = pl.Trainer(
+            max_steps=1,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+            callbacks=[tracker_opacus],
+        )
+        trainer_opacus.fit(model_opacus, dataloader)
+
+        # Compare gradient norms
+        functorch_network = tracker_functorch.metrics[0]["batch_grad_norms_network"]
+        opacus_network = tracker_opacus.metrics[0]["batch_grad_norms_network"]
+        functorch_loss = tracker_functorch.metrics[0]["batch_grad_norms_loss"]
+        opacus_loss = tracker_opacus.metrics[0]["batch_grad_norms_loss"]
+
+        assert torch.allclose(functorch_network, opacus_network, atol=1e-5), (
+            f"Network gradient norms differ: functorch={functorch_network}, "
+            f"opacus={opacus_network}"
+        )
+        assert torch.allclose(functorch_loss, opacus_loss, atol=1e-5), (
+            f"Loss gradient norms differ: functorch={functorch_loss}, "
+            f"opacus={opacus_loss}"
+        )
+
+    def test_engines_produce_same_training_trajectory(self):
+        """Both engines result in identical model parameters after training."""
+
+        class SimpleMLP(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Linear(10, 2)
+                self.criterion = F.cross_entropy
+
+            def forward(self, x):
+                return self.model(x)
+
+            def training_step(self, batch, batch_idx):
+                x, y = batch
+                logits = self(x)
+                loss = self.criterion(logits, y)
+                return loss
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.01)
+
+        # Train with functorch
+        torch.manual_seed(42)
+        model_functorch = analyzer(SimpleMLP, sample_wise_engine="functorch")
+
+        torch.manual_seed(100)
+        batch = (torch.randn(8, 10), torch.randint(0, 2, (8,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=8)
+
+        trainer_functorch = pl.Trainer(
+            max_steps=5,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer_functorch.fit(model_functorch, dataloader)
+
+        # Train with opacus
+        torch.manual_seed(42)
+        model_opacus = analyzer(SimpleMLP, sample_wise_engine="opacus")
+
+        torch.manual_seed(100)
+        batch = (torch.randn(8, 10), torch.randint(0, 2, (8,)))
+        dataset = TensorDataset(*batch)
+        dataloader = DataLoader(dataset, batch_size=8)
+
+        trainer_opacus = pl.Trainer(
+            max_steps=5,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer_opacus.fit(model_opacus, dataloader)
+
+        # Compare final model parameters
+        for p_functorch, p_opacus in zip(
+            model_functorch.parameters(), model_opacus.parameters()
+        ):
+            assert torch.allclose(
+                p_functorch, p_opacus, atol=1e-5
+            ), "Model parameters diverged between functorch and opacus engines"
