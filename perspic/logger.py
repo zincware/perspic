@@ -106,8 +106,8 @@ def logarithmic_windows(
             step_to_window={0: 0},
         )
 
-    # Generate log-spaced center points
-    # Start from 1 (not 0) since log(0) is undefined
+    # Generate log-spaced center points in the range [10^0, 10^log10(max_steps)]
+    # Step 0 will be added separately below
     num_points = int(points_per_decade * math.log10(max_steps)) + 1
     # Generate logspace without numpy: 10^(start + i * step) for i in range(num_points)
     log_start, log_end = 0, math.log10(max_steps)
