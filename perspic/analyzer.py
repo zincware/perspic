@@ -19,7 +19,8 @@ def analyzer(
     opacus_strict: bool = False,
     analyze_every: Optional[int] = None,
     analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
-    **model_kwargs
+    linearizing_lrs: list[float] = [1e-3],
+    **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
 
@@ -45,6 +46,8 @@ def analyzer(
             analysis runs only at the scheduled steps.
             If both analyze_every and analysis_schedule are provided, analysis_schedule
             takes precedence.
+        linearizing_lrs: List of learning rates for linearization probing.
+            Defaults to [1e-3].
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -105,7 +108,8 @@ def analyzer(
             opacus_strict=opacus_strict,
             analyze_every=analyze_every,
             analysis_schedule=analysis_schedule,
-            **model_kwargs
+            linearizing_lrs=linearizing_lrs,
+            **model_kwargs,
         ):
             super().__init__(**model_kwargs)
 
@@ -129,7 +133,7 @@ def analyzer(
             elif sample_wise_engine == "opacus":
                 self.sample_calc = SamplewiseCalculatorOpacus(strict=opacus_strict)
 
-            self.linearizer = Linearizer()
+            self.linearizer = Linearizer(eta_array=linearizing_lrs)
             self.coupling_calc = CouplingCalculator()
             self.disable_analyzer = disable_analyzer
             self.log_metrics = log_metrics
@@ -241,27 +245,34 @@ def analyzer(
                     criterion=self.criterion,
                     x=x,
                     y=y,
-                    eta=1e-5,
                 )
 
+                # Compute coupling value
                 coupling_value = self.coupling_calc.calculate(
-                    loss_before=probe_results[0],
-                    loss_after=probe_results[1],
+                    loss_before=list(probe_results.values())[0][0],
+                    loss_after=list(probe_results.values())[0][1],
                     chi_loss=samples_results["batch_grad_norms_loss"],
                     chi_net=samples_results["batch_grad_norms_network"],
-                    learning_rate_of_virtual_step=1e-5,
+                    learning_rate_of_virtual_step=list(probe_results.keys())[0],
                 )
 
             # Log results with fixed metric names
             if self.log_metrics:
                 self.log("chi_net", samples_results["batch_grad_norms_network"])
                 self.log("chi_loss", samples_results["batch_grad_norms_loss"])
-                self.log("loss", probe_results[0])
-                self.log("perturbed_loss", probe_results[1])
-                self.log("delta_loss", probe_results[1] - probe_results[0])
-                self.log("batch_size", x.shape[0])
                 self.log("coupling", coupling_value)
+                self.log("batch_size", x.shape[0])
                 self.log("analysis_step", self.global_step)
+                for eta, (loss, perturbed_loss) in probe_results.items():
+                    eta_str = f"{eta:.0e}"
+                    self.log(f"lin_loss_before_eta_{eta_str}", loss)
+                    if perturbed_loss is not None:
+                        self.log(f"lin_loss_after_eta_{eta_str}", perturbed_loss)
+                        self.log(
+                            f"lin_loss_delta_eta_{eta_str}",
+                            perturbed_loss - loss,
+                        )
+                self.log("loss", probe_results[list(probe_results.keys())[0]][0])
 
                 # Log window tracking info if using logarithmic schedule
                 if self.analysis_schedule is not None:
@@ -294,5 +305,5 @@ def analyzer(
         opacus_strict=opacus_strict,
         analyze_every=analyze_every,
         analysis_schedule=analysis_schedule,
-        **model_kwargs
+        **model_kwargs,
     )
