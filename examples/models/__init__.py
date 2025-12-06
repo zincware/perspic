@@ -6,6 +6,9 @@ This package provides:
 - Lightning wrapper modules for training (lightning_modules.py)
 """
 
+# Import Convolutional models
+from .cnns import WideResNet
+
 # Import Lightning modules
 from .lightning_modules import (
     AdvancedClassificationModule,
@@ -30,6 +33,8 @@ __all__ = [
     "ConfigurableMLP",
     "ResidualMLP",
     "ResidualBlock",
+    # Convolutional models
+    "WideResNet",
     # Lightning modules
     "ClassificationModule",
     "AdvancedClassificationModule",

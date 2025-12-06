@@ -4,8 +4,6 @@ from typing import Any, Callable, Optional, Tuple
 
 import torch
 
-from perspic.utils import set_track_running_stats
-
 
 class Linearizer:
     """
@@ -57,20 +55,14 @@ class Linearizer:
         orig_model_state = Linearizer._save_model_state(model)
         # 1b. Scheduler internals, if any
         orig_sched_state = copy.deepcopy(scheduler.state_dict()) if scheduler else None
-        # 1c. Train/eval mode
-        orig_mode = model.training
 
         device = (
             next(model.parameters()).device
             if any(p.requires_grad for p in model.parameters())
             else None
         )
-        model = set_track_running_stats(
-            model, track=False
-        )  # Only use current batch stats
-        model.train()  # still uses batch‐stats, but buffers won’t update
-        results = {}
 
+        results = {}
         try:
             loss = criterion(model(x), y)
             # prefer lightning’s manual backward if available
@@ -119,8 +111,6 @@ class Linearizer:
             model = Linearizer._load_model_state(model, orig_model_state, device=device)
             if scheduler is not None:
                 scheduler.load_state_dict(orig_sched_state)
-            model = set_track_running_stats(model, track=True)
-            model.train(orig_mode)
 
         return results
 

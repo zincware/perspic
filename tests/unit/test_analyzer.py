@@ -294,8 +294,10 @@ class TestBeforeTrainingStepHook:
         assert "batch_grad_norms_loss" in logged_metrics
         assert any(name.startswith("lin_loss_before_eta_") for name in logged_metrics)
         assert any(name.startswith("lin_loss_after_eta_") for name in logged_metrics)
+        assert any(name.startswith("lin_loss_delta_eta_") for name in logged_metrics)
         assert "loss_value" in logged_metrics
         assert "actual_batch_size" in logged_metrics
+        assert "coupling_value" in logged_metrics
 
     @patch.object(SamplewiseCalculatorFunctorch, "compute")
     @patch.object(Linearizer, "probe_train_step")

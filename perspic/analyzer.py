@@ -3,8 +3,10 @@ from typing import Optional
 
 import pytorch_lightning as pl
 
+from perspic.calculator.coupling import CouplingCalculator
 from perspic.calculator.linearizer import Linearizer
 from perspic.calculator.samplewise import SamplewiseCalculatorFunctorch
+from perspic.utils import BatchStatSnapshot
 
 
 def analyzer(
@@ -97,6 +99,7 @@ def analyzer(
                 )
 
             self.linearizer = Linearizer(eta_array=linearizing_lrs)
+            self.coupling_calc = CouplingCalculator()
             self.disable_analyzer = disable_analyzer
             self.log_metrics = log_metrics
 
@@ -174,21 +177,30 @@ def analyzer(
             """
             x, y = batch
 
-            # Compute samplewise metrics
-            samples_results = self.sample_calc.compute(
-                self.model,
-                self.criterion,
-                x,
-                y,
-            )
+            with BatchStatSnapshot(self.model, x):
+                # Compute samplewise metrics
+                samples_results = self.sample_calc.compute(
+                    self.model,
+                    self.criterion,
+                    x,
+                    y,
+                )
+                # Linearizer probe
+                probe_results = self.linearizer.probe_train_step(
+                    model=self.model,
+                    criterion=self.criterion,
+                    x=x,
+                    y=y,
+                )
 
-            # Linearizer probe
-            probe_results = self.linearizer.probe_train_step(
-                model=self.model,
-                criterion=self.criterion,
-                x=x,
-                y=y,
-            )
+                # Compute coupling value
+                coupling_value = self.coupling_calc.calculate(
+                    loss_before=list(probe_results.values())[0][0],
+                    loss_after=list(probe_results.values())[0][1],
+                    chi_loss=samples_results["batch_grad_norms_loss"],
+                    chi_net=samples_results["batch_grad_norms_network"],
+                    learning_rate_of_virtual_step=1e-5,
+                )
 
             # Log results
             if self.log_metrics:
@@ -205,8 +217,13 @@ def analyzer(
                     self.log(f"lin_loss_before_eta_{eta_str}", loss)
                     if perturbed_loss is not None:
                         self.log(f"lin_loss_after_eta_{eta_str}", perturbed_loss)
+                        self.log(
+                            f"lin_loss_delta_eta_{eta_str}",
+                            perturbed_loss - loss,
+                        )
                 self.log("loss_value", probe_results[list(probe_results.keys())[0]][0])
                 self.log("actual_batch_size", x.shape[0])
+                self.log("coupling_value", coupling_value)
 
             return None
 
