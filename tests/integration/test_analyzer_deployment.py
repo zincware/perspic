@@ -725,12 +725,8 @@ class TestSamplewiseEngineConsistency:
                 # Capture the logged metrics
                 self.metrics.append(
                     {
-                        "batch_grad_norms_network": trainer.callback_metrics.get(
-                            "batch_grad_norms_network"
-                        ),
-                        "batch_grad_norms_loss": trainer.callback_metrics.get(
-                            "batch_grad_norms_loss"
-                        ),
+                        "chi_net": trainer.callback_metrics.get("chi_net"),
+                        "chi_loss": trainer.callback_metrics.get("chi_loss"),
                     }
                 )
 
@@ -774,10 +770,10 @@ class TestSamplewiseEngineConsistency:
         trainer_opacus.fit(model_opacus, dataloader)
 
         # Compare gradient norms
-        functorch_network = tracker_functorch.metrics[0]["batch_grad_norms_network"]
-        opacus_network = tracker_opacus.metrics[0]["batch_grad_norms_network"]
-        functorch_loss = tracker_functorch.metrics[0]["batch_grad_norms_loss"]
-        opacus_loss = tracker_opacus.metrics[0]["batch_grad_norms_loss"]
+        functorch_network = tracker_functorch.metrics[0]["chi_net"]
+        opacus_network = tracker_opacus.metrics[0]["chi_net"]
+        functorch_loss = tracker_functorch.metrics[0]["chi_loss"]
+        opacus_loss = tracker_opacus.metrics[0]["chi_loss"]
 
         assert torch.allclose(functorch_network, opacus_network, atol=1e-5), (
             f"Network gradient norms differ: functorch={functorch_network}, "
@@ -822,12 +818,8 @@ class TestSamplewiseEngineConsistency:
             def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
                 self.metrics.append(
                     {
-                        "batch_grad_norms_network": trainer.callback_metrics.get(
-                            "batch_grad_norms_network"
-                        ),
-                        "batch_grad_norms_loss": trainer.callback_metrics.get(
-                            "batch_grad_norms_loss"
-                        ),
+                        "chi_net": trainer.callback_metrics.get("chi_net"),
+                        "chi_loss": trainer.callback_metrics.get("chi_loss"),
                     }
                 )
 
@@ -870,10 +862,10 @@ class TestSamplewiseEngineConsistency:
         trainer_opacus.fit(model_opacus, dataloader)
 
         # Compare gradient norms
-        functorch_network = tracker_functorch.metrics[0]["batch_grad_norms_network"]
-        opacus_network = tracker_opacus.metrics[0]["batch_grad_norms_network"]
-        functorch_loss = tracker_functorch.metrics[0]["batch_grad_norms_loss"]
-        opacus_loss = tracker_opacus.metrics[0]["batch_grad_norms_loss"]
+        functorch_network = tracker_functorch.metrics[0]["chi_net"]
+        opacus_network = tracker_opacus.metrics[0]["chi_net"]
+        functorch_loss = tracker_functorch.metrics[0]["chi_loss"]
+        opacus_loss = tracker_opacus.metrics[0]["chi_loss"]
 
         assert torch.allclose(functorch_network, opacus_network, atol=1e-5), (
             f"Network gradient norms differ: functorch={functorch_network}, "
@@ -946,3 +938,128 @@ class TestSamplewiseEngineConsistency:
             assert torch.allclose(
                 p_functorch, p_opacus, atol=1e-5
             ), "Model parameters diverged between functorch and opacus engines"
+
+
+class TestAnalyzerWithScheduling:
+    """Integration tests for analyzer with scheduling options."""
+
+    @pytest.fixture
+    def simple_module(self):
+        """Create a simple LightningModule for scheduling tests."""
+
+        class SimpleModule(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Linear(10, 2)
+                self.criterion = F.cross_entropy
+
+            def forward(self, x):
+                return self.model(x)
+
+            def training_step(self, batch, batch_idx):
+                x, y = batch
+                return self.criterion(self(x), y)
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=0.01)
+
+        return SimpleModule
+
+    @pytest.fixture
+    def simple_dataloader(self):
+        """Create a simple dataloader."""
+        torch.manual_seed(42)
+        x = torch.randn(32, 10)
+        y = torch.randint(0, 2, (32,))
+        return DataLoader(TensorDataset(x, y), batch_size=4)
+
+    def test_training_with_analyze_every(self, simple_module, simple_dataloader):
+        """Test training completes with analyze_every."""
+        model = analyzer(simple_module, analyze_every=2)
+
+        trainer = pl.Trainer(
+            max_steps=8,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer.fit(model, simple_dataloader)
+
+        assert trainer.global_step == 8
+
+    def test_training_with_logarithmic_schedule(self, simple_module, simple_dataloader):
+        """Test training completes with logarithmic schedule."""
+        from perspic.logger import logarithmic_windows
+
+        schedule = logarithmic_windows(max_steps=10, base_window=2)
+        model = analyzer(simple_module, analysis_schedule=schedule)
+
+        trainer = pl.Trainer(
+            max_steps=8,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer.fit(model, simple_dataloader)
+
+        assert trainer.global_step == 8
+
+    def test_analyze_every_reduces_compute(self, simple_module, simple_dataloader):
+        """Test analyze_every reduces analysis calls."""
+        from unittest.mock import MagicMock, patch
+
+        model = analyzer(simple_module, analyze_every=4)
+
+        # Count how many times _before_training_step runs analysis
+        original_before = model._before_training_step
+        call_count = {"value": 0}
+
+        def counting_before(batch, batch_idx):
+            if model._should_analyze(model.global_step):
+                call_count["value"] += 1
+            return original_before(batch, batch_idx)
+
+        model._before_training_step = counting_before
+
+        trainer = pl.Trainer(
+            max_steps=8,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer.fit(model, simple_dataloader)
+
+        # With analyze_every=4 and 8 steps, should analyze at steps 0, 4
+        assert call_count["value"] == 2
+
+    def test_schedule_reduces_compute(self, simple_module, simple_dataloader):
+        """Test schedule reduces analysis calls."""
+        from perspic.logger import LogarithmicWindowSchedule
+
+        # Only analyze at steps 0 and 5
+        schedule = LogarithmicWindowSchedule(
+            windows={0: [0], 1: [5]},
+            window_centers={0: 0, 1: 5},
+            step_to_window={0: 0, 5: 1},
+        )
+        model = analyzer(simple_module, analysis_schedule=schedule)
+
+        call_count = {"value": 0}
+        original_before = model._before_training_step
+
+        def counting_before(batch, batch_idx):
+            if model._should_analyze(model.global_step):
+                call_count["value"] += 1
+            return original_before(batch, batch_idx)
+
+        model._before_training_step = counting_before
+
+        trainer = pl.Trainer(
+            max_steps=8,
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+        )
+        trainer.fit(model, simple_dataloader)
+
+        assert call_count["value"] == 2

@@ -288,16 +288,17 @@ class TestBeforeTrainingStepHook:
         model._before_training_step((x, y), 0)
 
         # Verify log was called for each metric
-        assert model.log.call_count == 7
+        assert model.log.call_count == 8
         logged_metrics = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
-        assert "batch_grad_norms_network" in logged_metrics
-        assert "batch_grad_norms_loss" in logged_metrics
-        assert "loss_value" in logged_metrics
-        assert "perturbed_loss_value" in logged_metrics
-        assert "actual_batch_size" in logged_metrics
+        assert "chi_net" in logged_metrics
+        assert "chi_loss" in logged_metrics
+        assert "loss" in logged_metrics
+        assert "perturbed_loss" in logged_metrics
+        assert "batch_size" in logged_metrics
         assert "delta_loss" in logged_metrics
-        assert "coupling_value" in logged_metrics
+        assert "coupling" in logged_metrics
+        assert "analysis_step" in logged_metrics
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
@@ -518,11 +519,11 @@ class TestMetricLogging:
 
         logged_names = [call[0][0] for call in model.log.call_args_list]
 
-        assert "batch_grad_norms_network" in logged_names
-        assert "batch_grad_norms_loss" in logged_names
-        assert "loss_value" in logged_names
-        assert "perturbed_loss_value" in logged_names
-        assert "actual_batch_size" in logged_names
+        assert "chi_net" in logged_names
+        assert "chi_loss" in logged_names
+        assert "loss" in logged_names
+        assert "perturbed_loss" in logged_names
+        assert "batch_size" in logged_names
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
@@ -544,10 +545,155 @@ class TestMetricLogging:
 
         logged_values = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
-        assert torch.allclose(
-            logged_values["batch_grad_norms_network"], torch.tensor(1.5)
+        assert torch.allclose(logged_values["chi_net"], torch.tensor(1.5))
+        assert torch.allclose(logged_values["chi_loss"], torch.tensor(2.5))
+        assert torch.allclose(logged_values["loss"], torch.tensor(3.5))
+        assert torch.allclose(logged_values["perturbed_loss"], torch.tensor(4.5))
+        assert logged_values["batch_size"] == 4  # batch size from sample_batch
+
+
+class TestAnalyzerScheduling:
+    """Test analysis scheduling in the Analyzer."""
+
+    def test_analyze_every_stored(self, simple_lightning_module):
+        """Test analyze_every parameter is stored."""
+        model = analyzer(simple_lightning_module, analyze_every=10)
+        assert model.analyze_every == 10
+
+    def test_analyze_every_none_default(self, simple_lightning_module):
+        """Test analyze_every defaults to None."""
+        model = analyzer(simple_lightning_module)
+        assert model.analyze_every is None
+
+    def test_analyze_every_invalid_raises_error(self, simple_lightning_module):
+        """Test analyze_every < 1 raises ValueError."""
+        with pytest.raises(ValueError, match="analyze_every must be a positive"):
+            analyzer(simple_lightning_module, analyze_every=0)
+
+    def test_analysis_schedule_stored(self, simple_lightning_module):
+        """Test analysis_schedule parameter is stored."""
+        from perspic.logger import logarithmic_windows
+
+        schedule = logarithmic_windows(max_steps=100)
+        model = analyzer(simple_lightning_module, analysis_schedule=schedule)
+        assert model.analysis_schedule is schedule
+
+    def test_analysis_schedule_none_default(self, simple_lightning_module):
+        """Test analysis_schedule defaults to None."""
+        model = analyzer(simple_lightning_module)
+        assert model.analysis_schedule is None
+
+    def test_should_analyze_default_true(self, simple_lightning_module):
+        """Test _should_analyze returns True by default."""
+        model = analyzer(simple_lightning_module)
+        assert model._should_analyze(0) is True
+        assert model._should_analyze(42) is True
+
+    def test_should_analyze_with_analyze_every(self, simple_lightning_module):
+        """Test _should_analyze respects analyze_every."""
+        model = analyzer(simple_lightning_module, analyze_every=10)
+        assert model._should_analyze(0) is True
+        assert model._should_analyze(10) is True
+        assert model._should_analyze(5) is False
+
+    def test_should_analyze_with_schedule(self, simple_lightning_module):
+        """Test _should_analyze uses schedule when provided."""
+        from perspic.logger import LogarithmicWindowSchedule
+
+        schedule = LogarithmicWindowSchedule(
+            windows={0: [0, 1]},
+            window_centers={0: 0},
+            step_to_window={0: 0, 1: 0},
         )
-        assert torch.allclose(logged_values["batch_grad_norms_loss"], torch.tensor(2.5))
-        assert torch.allclose(logged_values["loss_value"], torch.tensor(3.5))
-        assert torch.allclose(logged_values["perturbed_loss_value"], torch.tensor(4.5))
-        assert logged_values["actual_batch_size"] == 4  # batch size from sample_batch
+        model = analyzer(simple_lightning_module, analysis_schedule=schedule)
+        assert model._should_analyze(0) is True
+        assert model._should_analyze(1) is True
+        assert model._should_analyze(2) is False
+
+    def test_schedule_takes_precedence(self, simple_lightning_module):
+        """Test analysis_schedule takes precedence over analyze_every."""
+        from perspic.logger import LogarithmicWindowSchedule
+
+        schedule = LogarithmicWindowSchedule(
+            windows={0: [5]},
+            window_centers={0: 5},
+            step_to_window={5: 0},
+        )
+        model = analyzer(
+            simple_lightning_module, analyze_every=10, analysis_schedule=schedule
+        )
+        # analyze_every would say True for 0, but schedule says False
+        assert model._should_analyze(0) is False
+        assert model._should_analyze(5) is True
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "probe_train_step")
+    def test_before_hook_skipped_when_not_scheduled(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """Test _before_training_step skips analysis when not scheduled."""
+        model = analyzer(simple_lightning_module, analyze_every=10)
+        model._global_step = 5  # Not a multiple of 10
+
+        # Mock global_step property
+        type(model).global_step = property(lambda self: 5)
+
+        model._before_training_step(sample_batch, 0)
+
+        mock_compute.assert_not_called()
+        mock_probe.assert_not_called()
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "probe_train_step")
+    def test_logs_window_info_with_schedule(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """Test window_id, window_center, and window_width logged when schedule provided."""
+        from perspic.logger import LogarithmicWindowSchedule
+
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = (torch.tensor(1.0), torch.tensor(1.0))
+
+        schedule = LogarithmicWindowSchedule(
+            windows={0: [0]},
+            window_centers={0: 0},
+            step_to_window={0: 0},
+        )
+        model = analyzer(
+            simple_lightning_module, analysis_schedule=schedule, log_metrics=True
+        )
+        model.log = Mock()
+        type(model).global_step = property(lambda self: 0)
+
+        model._before_training_step(sample_batch, 0)
+
+        logged_names = [call[0][0] for call in model.log.call_args_list]
+        assert "window_id" in logged_names
+        assert "window_center" in logged_names
+        assert "window_width" in logged_names
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "probe_train_step")
+    def test_no_window_info_without_schedule(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """Test window_id, window_center, and window_width not logged without schedule."""
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = (torch.tensor(1.0), torch.tensor(1.0))
+
+        model = analyzer(simple_lightning_module, log_metrics=True)
+        model.log = Mock()
+        type(model).global_step = property(lambda self: 0)
+
+        model._before_training_step(sample_batch, 0)
+
+        logged_names = [call[0][0] for call in model.log.call_args_list]
+        assert "window_id" not in logged_names
+        assert "window_center" not in logged_names
+        assert "window_width" not in logged_names
