@@ -43,6 +43,8 @@ def analyzer(
         analysis_schedule: A LogarithmicWindowSchedule that defines which steps
             to analyze. Created via `logarithmic_windows()`. If provided,
             analysis runs only at the scheduled steps.
+            If both analyze_every and analysis_schedule are provided, analysis_schedule 
+            takes precedence.
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
