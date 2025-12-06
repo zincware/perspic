@@ -39,7 +39,7 @@ class TestLogarithmicWindowSchedule:
     def test_get_window_info_valid_step(self, sample_schedule):
         """Test get_window_info returns correct dict for valid step."""
         info = sample_schedule.get_window_info(10)
-        assert info == {"window_id": 1, "window_center": 10}
+        assert info == {"window_id": 1, "window_center": 10, "window_width": 3}
 
     def test_get_window_info_invalid_step(self, sample_schedule):
         """Test get_window_info returns None for invalid step."""

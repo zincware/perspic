@@ -648,7 +648,7 @@ class TestAnalyzerScheduling:
     def test_logs_window_info_with_schedule(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
-        """Test window_id and window_center logged when schedule provided."""
+        """Test window_id, window_center, and window_width logged when schedule provided."""
         from perspic.logger import LogarithmicWindowSchedule
 
         mock_compute.return_value = {
@@ -673,13 +673,14 @@ class TestAnalyzerScheduling:
         logged_names = [call[0][0] for call in model.log.call_args_list]
         assert "window_id" in logged_names
         assert "window_center" in logged_names
+        assert "window_width" in logged_names
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "probe_train_step")
     def test_no_window_info_without_schedule(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
-        """Test window_id and window_center not logged without schedule."""
+        """Test window_id, window_center, and window_width not logged without schedule."""
         mock_compute.return_value = {
             "batch_grad_norms_network": torch.tensor(1.0),
             "batch_grad_norms_loss": torch.tensor(1.0),
@@ -695,3 +696,4 @@ class TestAnalyzerScheduling:
         logged_names = [call[0][0] for call in model.log.call_args_list]
         assert "window_id" not in logged_names
         assert "window_center" not in logged_names
+        assert "window_width" not in logged_names

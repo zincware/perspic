@@ -32,8 +32,8 @@ class LogarithmicWindowSchedule:
         """Get window metadata for a step.
 
         Returns:
-            Dict with 'window_id' and 'window_center' if step is in a window,
-            None otherwise.
+            Dict with 'window_id', 'window_center', and 'window_width' if step
+            is in a window, None otherwise.
         """
         window_id = self.step_to_window.get(step)
         if window_id is None:
@@ -41,6 +41,7 @@ class LogarithmicWindowSchedule:
         return {
             "window_id": window_id,
             "window_center": self.window_centers[window_id],
+            "window_width": len(self.windows[window_id]),
         }
 
     def __repr__(self) -> str:

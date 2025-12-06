@@ -269,6 +269,7 @@ def analyzer(
                     if window_info is not None:
                         self.log("window_id", window_info["window_id"])
                         self.log("window_center", window_info["window_center"])
+                        self.log("window_width", window_info["window_width"])
 
             return None
 
