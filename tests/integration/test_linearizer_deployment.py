@@ -19,7 +19,7 @@ def simple_model():
     return model
 
 
-def make_complex_model():
+def complex_model():
     """Create a more complex model with BatchNorm."""
     return nn.Sequential(
         nn.Linear(10, 20),
@@ -89,7 +89,7 @@ class TestLinearizer:
 
         for _seed in range(num_seeds):
             torch.manual_seed(_seed)
-            model = make_complex_model()
+            model = complex_model()
 
             # Probe all etas with same model
             linearizer = Linearizer(etas)
