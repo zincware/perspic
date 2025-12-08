@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from perspic.calculator.linearizer import (
     ApproximateLinearizer,
     ExactLinearizer,
-    Linearizer,
 )
 
 
@@ -28,7 +27,7 @@ x = torch.randn(4, 10)
 y = torch.randint(0, 5, (4,))
 
 # =============================================================================
-# ApproximateLinearizer (alias: Linearizer)
+# ApproximateLinearizer
 # Uses virtual gradient steps to approximate the linear response
 # =============================================================================
 print("=" * 60)
@@ -52,11 +51,6 @@ for eta, (loss, perturbed_loss, delta_loss) in approx_results.items():
     print(
         f"  eta={eta:.0e}: loss={loss:.6f}, perturbed={perturbed_loss:.6f}, delta={delta_loss:.6e}"
     )
-
-# Verify Linearizer is an alias for ApproximateLinearizer
-assert (
-    Linearizer is ApproximateLinearizer
-), "Linearizer should be an alias for ApproximateLinearizer"
 
 # =============================================================================
 # ExactLinearizer
