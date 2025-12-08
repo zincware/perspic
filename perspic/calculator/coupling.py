@@ -21,7 +21,7 @@ class CouplingCalculator:
         chi_loss,
         chi_net,
         learning_rate_of_virtual_step=None,
-        exact_linearizer=False,
+        exact_linearizer=True,
     ):
         """
         Calculate the coupling value.
