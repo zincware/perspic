@@ -259,14 +259,29 @@ def analyzer(
                 x2 = x2.to(x.device)
                 y2 = y2.to(y.device)
 
+            samples_results = {}
             with BatchStatSnapshot(self.model, x):
-                # Compute samplewise metrics
-                samples_results = self.sample_calc.compute(
+                # Compute samplewise metrics for the training batch
+                samples_results["self"] = self.sample_calc.compute(
                     self.model,
                     self.criterion,
                     x,
                     y,
                 )
+                # Compute samplewise metrics for the cross batch if available
+                if x2 is not None and y2 is not None:
+                    fake_response = self.sample_calc.compute(
+                        self.model,
+                        self.criterion,
+                        x2,
+                        y2,
+                    )
+                    print(samples_results["self"])
+                    samples_results["cross"] = self.sample_calc.compute_cross_metrics(
+                        sample_wise_metrics_self=samples_results["self"],
+                        sample_wise_metrics_cross=fake_response,
+                    )
+
                 # Linearizer compute
                 probe_results = self.linearizer.compute(
                     model=self.model,
@@ -283,14 +298,14 @@ def analyzer(
                 # Compute coupling value (using self response)
                 coupling_value = self.coupling_calc.calculate(
                     delta_loss=delta_loss_self,
-                    chi_loss=samples_results["batch_grad_norms_loss"],
-                    chi_net=samples_results["batch_grad_norms_network"],
+                    chi_loss=samples_results["self"]["batch_grad_norms_loss"],
+                    chi_net=samples_results["self"]["batch_grad_norms_network"],
                 )
 
             # Log results with fixed metric names
             if self.log_metrics:
-                self.log("chi_net", samples_results["batch_grad_norms_network"])
-                self.log("chi_loss", samples_results["batch_grad_norms_loss"])
+                self.log("chi_net", samples_results["self"]["batch_grad_norms_network"])
+                self.log("chi_loss", samples_results["self"]["batch_grad_norms_loss"])
                 self.log("coupling", coupling_value)
                 self.log("batch_size", x.shape[0])
                 self.log("analysis_step", self.global_step)

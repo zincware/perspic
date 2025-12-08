@@ -41,6 +41,37 @@ class SamplewiseCalculator(ABC):
                     )
                     return  # Only warn once
 
+    @staticmethod
+    def compute_cross_metrics(
+        sample_wise_metrics_self: Dict[str, torch.Tensor],
+        sample_wise_metrics_cross: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Compute sample-wise cross metrics from self and cross batches.
+
+        Computes the geometric mean of corresponding metrics from two batches:
+        ``cross_metric = sqrt(metric_self * metric_cross)``. This provides a
+        symmetric measure of gradient coupling between samples from different
+        batches, useful for analyzing gradient interference during training.
+
+        Args:
+            sample_wise_metrics_self: Dictionary of sample-wise metrics (e.g.,
+                gradient norms) computed from the training batch. Each value
+                should be a tensor of shape (batch_size,).
+            sample_wise_metrics_cross: Dictionary of sample-wise metrics computed
+                from the cross batch. Must have the same keys as
+                ``sample_wise_metrics_self``.
+
+        Returns:
+            Dictionary with the same keys as the inputs, where each value is
+            the element-wise geometric mean of the corresponding input tensors.
+        """
+        cross_metrics = {}
+        for key in sample_wise_metrics_self.keys():
+            cross_metrics[key] = torch.sqrt(
+                sample_wise_metrics_self[key] * sample_wise_metrics_cross[key]
+            )
+        return cross_metrics
+
     @abstractmethod
     def compute(
         self,
