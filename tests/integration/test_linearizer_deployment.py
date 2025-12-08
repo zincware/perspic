@@ -54,7 +54,7 @@ class TestLinearizer:
         simple_model.load_state_dict(initial_state)
         simple_model.zero_grad()
         eta_array = [1e-3, 1e-4, 1e-5]
-        results = Linearizer(eta_array).probe_train_step(
+        results = Linearizer(eta_array).compute(
             model=simple_model,
             criterion=criterion,
             x=x,
@@ -62,9 +62,10 @@ class TestLinearizer:
         )
 
         # Verify Taylor approximation
-        for eta, (loss_before, loss_after) in results.items():
+        for eta, (loss_before, loss_after, delta_loss) in results.items():
             assert loss_after is not None
-            actual_delta = loss_after - loss_before
+            assert delta_loss is not None
+            actual_delta = delta_loss
             expected_delta = -eta * grad_norm_squared
 
             # Tolerance scales with eta: larger eta → larger tolerance
@@ -93,7 +94,7 @@ class TestLinearizer:
 
             # Probe all etas with same model
             linearizer = Linearizer(etas)
-            results = linearizer.probe_train_step(
+            results = linearizer.compute(
                 model=model,
                 criterion=criterion,
                 x=x,
@@ -102,8 +103,8 @@ class TestLinearizer:
 
             # Accumulate deltas
             for eta in etas:
-                loss_before, loss_after = results[eta]
-                avg_deltas[eta] += (loss_after - loss_before) / num_seeds
+                loss_before, loss_after, delta_loss = results[eta]
+                avg_deltas[eta] += delta_loss / num_seeds
 
         # Check that delta/eta is constant (linear scaling)
         ratios = [avg_deltas[eta] / eta for eta in etas]

@@ -4,7 +4,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from perspic import Linearizer
+from perspic import ApproximateLinearizer, BaseLinearizer, ExactLinearizer, Linearizer
+from perspic.utils import BatchStatSnapshot
 
 
 @pytest.fixture
@@ -46,8 +47,8 @@ class TestMemoryUsageOfSaveLoad:
 
 
 class TestMultipleLearningRates:
-    def test_probe_train_step_multiple_etas(self, simple_model):
-        """Test that probe_train_step can handle multiple learning rates."""
+    def test_compute_multiple_etas(self, simple_model):
+        """Test that compute can handle multiple learning rates."""
         torch.manual_seed(42)
         model = simple_model
         criterion = nn.CrossEntropyLoss()
@@ -56,7 +57,7 @@ class TestMultipleLearningRates:
         eta_array = [1e-1, 1e-2, 1e-3, 1e-6]
         linearizer = Linearizer(eta_array=eta_array)
 
-        results = linearizer.probe_train_step(
+        results = linearizer.compute(
             model=model,
             criterion=criterion,
             x=x,
@@ -69,11 +70,15 @@ class TestMultipleLearningRates:
         assert len(results) == len(eta_array)
 
         # Verify all etas are in results with valid values
-        for eta, (loss, perturbed_loss) in results.items():
+        for eta, (loss, perturbed_loss, delta_loss) in results.items():
             assert eta in eta_array
             assert isinstance(loss, float)
             if perturbed_loss is not None:
                 assert isinstance(perturbed_loss, float)
+            if delta_loss is not None:
+                assert isinstance(delta_loss, float)
+                # Verify delta_loss consistency
+                assert abs(delta_loss - (perturbed_loss - loss)) < 1e-7
 
         # Verify not all perturbed losses are identical
         perturbed_losses = [
@@ -208,7 +213,7 @@ class TestProbeTrainStepCore:
         y = torch.randint(0, 5, (4,))
 
         linearizer = Linearizer([1e-3])
-        linearizer.probe_train_step(model=simple_model, criterion=criterion, x=x, y=y)
+        linearizer.compute(model=simple_model, criterion=criterion, x=x, y=y)
 
         # All gradients should be None or zero
         for param in simple_model.parameters():
@@ -233,16 +238,17 @@ class TestProbeTrainStepCore:
             return original_criterion(pred, target)
 
         linearizer = Linearizer([1e-3])
-        results = linearizer.probe_train_step(
+        results = linearizer.compute(
             model=simple_model,
             criterion=failing_criterion,
             x=x,
             y=y,
         )
 
-        # Should have original loss but None for perturbed
+        # Should have original loss but None for perturbed and delta
         assert results[1e-3][0] is not None
         assert results[1e-3][1] is None
+        assert results[1e-3][2] is None
 
     def test_original_loss_identical_across_etas(self, simple_model):
         criterion = nn.CrossEntropyLoss()
@@ -251,7 +257,7 @@ class TestProbeTrainStepCore:
         eta_array = [1e-1, 1e-3, 1e-5, 1e-7]
 
         linearizer = Linearizer(eta_array)
-        results = linearizer.probe_train_step(
+        results = linearizer.compute(
             model=simple_model,
             criterion=criterion,
             x=x,
@@ -298,3 +304,206 @@ class TestSaveLoadIntegration:
             assert torch.allclose(
                 simple_model.state_dict()[key], original_state[key]
             ), f"Parameter {key} not restored after multiple cycles"
+
+
+class TestExactLinearizer:
+    """Tests for the ExactLinearizer class."""
+
+    def test_exact_linearizer_returns_correct_format(self, simple_model):
+        """Test that ExactLinearizer returns the correct format with eta=-1."""
+        criterion = nn.CrossEntropyLoss()
+        x = torch.randn(4, 10)
+        y = torch.randint(0, 5, (4,))
+
+        linearizer = ExactLinearizer()
+        results = linearizer.compute(
+            model=simple_model,
+            criterion=criterion,
+            x=x,
+            y=y,
+        )
+
+        assert -1 in results
+        assert len(results) == 1
+        loss, perturbed_loss, delta_loss = results[-1]
+        assert isinstance(loss, float)
+        assert isinstance(perturbed_loss, float)
+        assert isinstance(delta_loss, float)
+        # delta_loss should be -||grad||^2 (negative)
+        assert delta_loss <= 0
+
+    def test_exact_linearizer_matches_manual_grad_norm_simple_model(self, simple_model):
+        """Test that ExactLinearizer computes the correct gradient norm squared."""
+        torch.manual_seed(42)
+        criterion = nn.MSELoss()
+        x = torch.randn(8, 10)
+        y = torch.randn(8, 5)
+
+        # Manually compute gradient norm squared
+        simple_model.zero_grad()
+        loss = criterion(simple_model(x), y)
+        loss.backward()
+        expected_grad_norm_squared = sum(
+            (p.grad**2).sum().item()
+            for p in simple_model.parameters()
+            if p.grad is not None
+        )
+
+        # Reset and use ExactLinearizer
+        simple_model.zero_grad()
+        linearizer = ExactLinearizer()
+        results = linearizer.compute(
+            model=simple_model,
+            criterion=criterion,
+            x=x,
+            y=y,
+        )
+
+        loss_val, perturbed_loss, delta_loss = results[-1]
+        computed_grad_norm_squared = -delta_loss
+
+        assert (
+            abs(computed_grad_norm_squared - expected_grad_norm_squared) < 1e-6
+        ), f"Expected {expected_grad_norm_squared}, got {computed_grad_norm_squared}"
+
+    def test_exact_linearizer_matches_manual_grad_norm_complex_model(
+        self, complex_model
+    ):
+        """Test that ExactLinearizer computes the correct gradient norm squared
+        for a more complex model with BatchNorm."""
+        torch.manual_seed(42)
+        criterion = nn.MSELoss()
+        x = torch.randn(8, 10)
+        y = torch.randn(8, 5)
+
+        # Manually compute gradient norm squared
+        complex_model.zero_grad()
+        loss = criterion(complex_model(x), y)
+        loss.backward()
+        expected_grad_norm_squared = sum(
+            (p.grad**2).sum().item()
+            for p in complex_model.parameters()
+            if p.grad is not None
+        )
+        # Reset and use ExactLinearizer
+        complex_model.zero_grad()
+        linearizer = ExactLinearizer()
+        results = linearizer.compute(
+            model=complex_model,
+            criterion=criterion,
+            x=x,
+            y=y,
+        )
+        loss_val, perturbed_loss, delta_loss = results[-1]
+        computed_grad_norm_squared = -delta_loss
+        assert (
+            abs(computed_grad_norm_squared - expected_grad_norm_squared) < 1e-6
+        ), f"Expected {expected_grad_norm_squared}, got {computed_grad_norm_squared}"
+
+    def test_exact_linearizer_matches_manual_grad_norm_with_snapshot(
+        self, complex_model
+    ):
+        """Test that ExactLinearizer computes the correct gradient norm squared
+        when using BatchStatSnapshot with BatchNorm layers."""
+        torch.manual_seed(42)
+        criterion = nn.MSELoss()
+        x = torch.randn(8, 10)
+        y = torch.randn(8, 5)
+
+        with BatchStatSnapshot(complex_model, x):
+            # Manually compute gradient norm squared
+            complex_model.zero_grad()
+            loss = criterion(complex_model(x), y)
+            loss.backward()
+            expected_grad_norm_squared = sum(
+                (p.grad**2).sum().item()
+                for p in complex_model.parameters()
+                if p.grad is not None
+            )
+
+            # Reset and use ExactLinearizer
+            complex_model.zero_grad()
+            linearizer = ExactLinearizer()
+            results = linearizer.compute(
+                model=complex_model,
+                criterion=criterion,
+                x=x,
+                y=y,
+            )
+            loss_val, perturbed_loss, delta_loss = results[-1]
+            computed_grad_norm_squared = -delta_loss
+            assert (
+                abs(computed_grad_norm_squared - expected_grad_norm_squared) < 1e-6
+            ), f"Expected {expected_grad_norm_squared}, got {computed_grad_norm_squared}"
+
+    def test_exact_linearizer_perturbed_loss_formula(self, simple_model):
+        """Test that perturbed_loss = loss - ||grad||^2."""
+        criterion = nn.CrossEntropyLoss()
+        x = torch.randn(4, 10)
+        y = torch.randint(0, 5, (4,))
+
+        linearizer = ExactLinearizer()
+        results = linearizer.compute(
+            model=simple_model,
+            criterion=criterion,
+            x=x,
+            y=y,
+        )
+
+        loss, perturbed_loss, delta_loss = results[-1]
+        assert abs(perturbed_loss - (loss + delta_loss)) < 1e-7
+
+    def test_exact_linearizer_rejects_eta_array(self):
+        """Test that ExactLinearizer raises error when eta_array is provided."""
+        with pytest.raises(ValueError, match="eta_array is not supported"):
+            ExactLinearizer(eta_array=[1e-3])
+
+    def test_exact_linearizer_exact_linearizer_property(self):
+        """Test that exact_linearizer is True for ExactLinearizer."""
+        linearizer = ExactLinearizer()
+        assert linearizer.exact_linearizer is True
+
+    def test_exact_linearizer_gradients_zeroed(self, simple_model):
+        """Test that gradients are zeroed after compute."""
+        criterion = nn.CrossEntropyLoss()
+        x = torch.randn(4, 10)
+        y = torch.randint(0, 5, (4,))
+
+        linearizer = ExactLinearizer()
+        linearizer.compute(model=simple_model, criterion=criterion, x=x, y=y)
+
+        for param in simple_model.parameters():
+            if param.grad is not None:
+                assert torch.allclose(
+                    param.grad, torch.zeros_like(param.grad)
+                ), "Gradients should be zeroed after compute"
+
+
+class TestApproximateLinearizer:
+    """Tests for ApproximateLinearizer specific behavior."""
+
+    def test_approximate_linearizer_requires_eta_array(self):
+        """Test that ApproximateLinearizer raises error without eta_array."""
+        with pytest.raises(ValueError, match="eta_array is required"):
+            ApproximateLinearizer(eta_array=None)
+
+        with pytest.raises(ValueError, match="eta_array is required"):
+            ApproximateLinearizer(eta_array=[])
+
+    def test_approximate_linearizer_exact_linearizer_property(self):
+        """Test that exact_linearizer is False for ApproximateLinearizer."""
+        linearizer = ApproximateLinearizer(eta_array=[1e-3])
+        assert linearizer.exact_linearizer is False
+
+
+class TestBaseLinearizer:
+    """Tests for BaseLinearizer ABC."""
+
+    def test_cannot_instantiate_base_linearizer(self):
+        """Test that BaseLinearizer cannot be instantiated directly."""
+        with pytest.raises(TypeError):
+            BaseLinearizer()
+
+    def test_linearizer_is_alias_for_approximate(self):
+        """Test that Linearizer is an alias for ApproximateLinearizer."""
+        assert Linearizer is ApproximateLinearizer

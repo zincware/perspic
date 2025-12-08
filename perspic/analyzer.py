@@ -4,7 +4,11 @@ from typing import Optional
 import pytorch_lightning as pl
 
 from perspic.calculator.coupling import CouplingCalculator
-from perspic.calculator.linearizer import Linearizer
+from perspic.calculator.linearizer import (
+    ApproximateLinearizer,
+    BaseLinearizer,
+    ExactLinearizer,
+)
 from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
 from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
 from perspic.logger import LogarithmicWindowSchedule
@@ -19,7 +23,8 @@ def analyzer(
     opacus_strict: bool = False,
     analyze_every: Optional[int] = None,
     analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
-    linearizing_lrs: list[float] = [1e-3],
+    exact_linearizer: bool = True,
+    linearizing_lrs: Optional[list[float]] = None,
     **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -46,8 +51,12 @@ def analyzer(
             analysis runs only at the scheduled steps.
             If both analyze_every and analysis_schedule are provided, analysis_schedule
             takes precedence.
+        exact_linearizer: If True (default), use ExactLinearizer which computes
+            ||∇L||² directly. If False, use ApproximateLinearizer
+            which probes with virtual gradient steps.
         linearizing_lrs: List of learning rates for linearization probing.
-            Defaults to [1e-3].
+            Required for ApproximateLinearizer. Ignored for ExactLinearizer.
+            Defaults to [1e-3] when exact_linearizer=False.
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -57,12 +66,16 @@ def analyzer(
 
     Raises:
         ValueError: If sample_wise_engine is not 'functorch' or 'opacus'.
+        ValueError: If linearizing_lrs is provided with exact_linearizer=True.
         AttributeError: If the wrapped module doesn't have a 'criterion'
             attribute.
 
     Examples:
-        # Analyze every step (default)
+        # Analyze every step with approximate linearization (default)
         model = analyzer(MyModule, model=backbone, lr=0.01)
+
+        # Analyze with exact linearization
+        model = analyzer(MyModule, enable_exact_linearization=True, model=backbone, lr=0.01)
 
         # Analyze every 100 steps
         model = analyzer(MyModule, analyze_every=100, model=backbone, lr=0.01)
@@ -108,6 +121,7 @@ def analyzer(
             opacus_strict=opacus_strict,
             analyze_every=analyze_every,
             analysis_schedule=analysis_schedule,
+            exact_linearizer=exact_linearizer,
             linearizing_lrs=linearizing_lrs,
             **model_kwargs,
         ):
@@ -128,12 +142,27 @@ def analyzer(
             if analyze_every is not None and analyze_every < 1:
                 raise ValueError("analyze_every must be a positive integer")
 
+            # Validate linearizer configuration
+            if exact_linearizer and linearizing_lrs is not None:
+                raise ValueError(
+                    "linearizing_lrs cannot be used with exact_linearizer=True. "
+                    "ExactLinearizer does not support multiple learning rates."
+                )
+
             if sample_wise_engine == "functorch":
                 self.sample_calc = SamplewiseCalculatorFunctorch()
             elif sample_wise_engine == "opacus":
                 self.sample_calc = SamplewiseCalculatorOpacus(strict=opacus_strict)
 
-            self.linearizer = Linearizer(eta_array=linearizing_lrs)
+            # Initialize the appropriate linearizer
+            if exact_linearizer:
+                self.linearizer = ExactLinearizer()
+            else:
+                # Default to [1e-3] if not provided
+                if linearizing_lrs is None:
+                    linearizing_lrs = [1e-3]
+                self.linearizer = ApproximateLinearizer(eta_array=linearizing_lrs)
+
             self.coupling_calc = CouplingCalculator()
             self.disable_analyzer = disable_analyzer
             self.log_metrics = log_metrics
@@ -239,21 +268,27 @@ def analyzer(
                     x,
                     y,
                 )
-                # Linearizer probe
-                probe_results = self.linearizer.probe_train_step(
+                # Linearizer compute
+                probe_results = self.linearizer.compute(
                     model=self.model,
                     criterion=self.criterion,
                     x=x,
                     y=y,
                 )
 
+                # Get the first result for coupling calculation
+                first_eta = list(probe_results.keys())[0]
+                loss_before, loss_after, delta_loss = probe_results[first_eta]
+
                 # Compute coupling value
                 coupling_value = self.coupling_calc.calculate(
-                    loss_before=list(probe_results.values())[0][0],
-                    loss_after=list(probe_results.values())[0][1],
+                    loss_before=loss_before,
+                    loss_after=loss_after,
+                    delta_loss=delta_loss,
                     chi_loss=samples_results["batch_grad_norms_loss"],
                     chi_net=samples_results["batch_grad_norms_network"],
-                    learning_rate_of_virtual_step=list(probe_results.keys())[0],
+                    learning_rate_of_virtual_step=first_eta if first_eta > 0 else None,
+                    exact_linearizer=self.linearizer.exact_linearizer,
                 )
 
             # Log results with fixed metric names
@@ -263,16 +298,25 @@ def analyzer(
                 self.log("coupling", coupling_value)
                 self.log("batch_size", x.shape[0])
                 self.log("analysis_step", self.global_step)
-                for eta, (loss, perturbed_loss) in probe_results.items():
-                    eta_str = f"{eta:.0e}"
-                    self.log(f"lin_loss_before_eta_{eta_str}", loss)
-                    if perturbed_loss is not None:
-                        self.log(f"lin_loss_after_eta_{eta_str}", perturbed_loss)
+                for eta, (loss, perturbed_loss, delta_loss) in probe_results.items():
+                    if self.linearizer.exact_linearizer:
+                        # Log exact linearizer results
+                        self.log("lin_loss", loss)
                         self.log(
-                            f"lin_loss_delta_eta_{eta_str}",
-                            perturbed_loss - loss,
+                            "lin_grad_norm_squared", -delta_loss if delta_loss else None
                         )
-                self.log("loss", probe_results[list(probe_results.keys())[0]][0])
+                    else:
+                        # Log approximate linearizer results
+                        eta_str = f"{eta:.0e}"
+                        self.log(f"lin_loss_before_eta_{eta_str}", loss)
+                        if perturbed_loss is not None:
+                            self.log(f"lin_loss_after_eta_{eta_str}", perturbed_loss)
+                        if delta_loss is not None:
+                            self.log(
+                                f"lin_loss_delta_eta_{eta_str}",
+                                delta_loss,
+                            )
+                self.log("loss", loss_before)
 
                 # Log window tracking info if using logarithmic schedule
                 if self.analysis_schedule is not None:
@@ -305,5 +349,7 @@ def analyzer(
         opacus_strict=opacus_strict,
         analyze_every=analyze_every,
         analysis_schedule=analysis_schedule,
+        exact_linearizer=exact_linearizer,
+        linearizing_lrs=linearizing_lrs,
         **model_kwargs,
     )
