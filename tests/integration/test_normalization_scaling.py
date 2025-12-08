@@ -63,22 +63,32 @@ class TestNormalizationScalingFunctorch:
         y_pool = torch.randint(0, 2, (batch_size_large,))
 
         model = MLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
         calculator = SamplewiseCalculatorFunctorch()
 
         # Compute with smaller batch
         X_small = X_pool[:batch_size_small]
         y_small = y_pool[:batch_size_small]
-        results_small = calculator.compute(model, loss_fn, X_small, y_small, normalize=True)
+        results_small = calculator.compute(
+            model, loss_fn, X_small, y_small, normalize=True
+        )
 
         # Compute with larger batch (using same data prefix + more samples)
-        results_large = calculator.compute(model, loss_fn, X_pool, y_pool, normalize=True)
+        results_large = calculator.compute(
+            model, loss_fn, X_pool, y_pool, normalize=True
+        )
 
         # Normalized metrics should be approximately equal (batch-size invariant)
         # Note: They won't be exactly equal because we're using different samples,
         # but the *scaling* should be correct. We verify by checking the ratio.
-        ratio_network = results_large["batch_grad_norms_network"] / results_small["batch_grad_norms_network"]
-        ratio_loss = results_large["batch_grad_norms_loss"] / results_small["batch_grad_norms_loss"]
+        ratio_network = (
+            results_large["batch_grad_norms_network"]
+            / results_small["batch_grad_norms_network"]
+        )
+        ratio_loss = (
+            results_large["batch_grad_norms_loss"]
+            / results_small["batch_grad_norms_loss"]
+        )
 
         # The ratios should be close to 1.0 (within a reasonable tolerance due to
         # different samples contributing different gradient magnitudes)
@@ -87,7 +97,9 @@ class TestNormalizationScalingFunctorch:
         assert ratio_loss > 0, "Loss gradient norms should be positive"
 
     @pytest.mark.parametrize("batch_sizes", [(8, 16), (8, 32), (16, 32)])
-    def test_normalized_metrics_scale_correctly_with_repeated_samples(self, batch_sizes):
+    def test_normalized_metrics_scale_correctly_with_repeated_samples(
+        self, batch_sizes
+    ):
         """Verify normalization by using repeated identical samples.
 
         If we repeat the same batch of samples N times, the normalized metrics
@@ -106,14 +118,18 @@ class TestNormalizationScalingFunctorch:
         y_repeated = y_base.repeat(multiplier)
 
         model = MLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
         calculator = SamplewiseCalculatorFunctorch()
 
         # Compute with base batch
-        results_base = calculator.compute(model, loss_fn, X_base, y_base, normalize=True)
+        results_base = calculator.compute(
+            model, loss_fn, X_base, y_base, normalize=True
+        )
 
         # Compute with repeated batch
-        results_repeated = calculator.compute(model, loss_fn, X_repeated, y_repeated, normalize=True)
+        results_repeated = calculator.compute(
+            model, loss_fn, X_repeated, y_repeated, normalize=True
+        )
 
         # With identical (repeated) samples, normalized metrics should be equal
         assert torch.allclose(
@@ -150,14 +166,18 @@ class TestNormalizationScalingFunctorch:
         y_repeated = y_base.repeat(multiplier)
 
         model = MLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
         calculator = SamplewiseCalculatorFunctorch()
 
         # Compute with base batch (unnormalized)
-        results_base = calculator.compute(model, loss_fn, X_base, y_base, normalize=False)
+        results_base = calculator.compute(
+            model, loss_fn, X_base, y_base, normalize=False
+        )
 
         # Compute with repeated batch (unnormalized)
-        results_repeated = calculator.compute(model, loss_fn, X_repeated, y_repeated, normalize=False)
+        results_repeated = calculator.compute(
+            model, loss_fn, X_repeated, y_repeated, normalize=False
+        )
 
         # Network gradient norms should scale linearly (multiply by batch_size ratio)
         expected_network = results_base["batch_grad_norms_network"] * multiplier
@@ -184,7 +204,9 @@ class TestNormalizationScalingOpacus:
     """Test batch-size scaling behavior for SamplewiseCalculatorOpacus."""
 
     @pytest.mark.parametrize("batch_sizes", [(8, 16), (8, 32), (16, 32)])
-    def test_normalized_metrics_scale_correctly_with_repeated_samples(self, batch_sizes):
+    def test_normalized_metrics_scale_correctly_with_repeated_samples(
+        self, batch_sizes
+    ):
         """Verify normalization by using repeated identical samples.
 
         If we repeat the same batch of samples N times, the normalized metrics
@@ -203,16 +225,20 @@ class TestNormalizationScalingOpacus:
         y_repeated = y_base.repeat(multiplier)
 
         model = MLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
         calculator = SamplewiseCalculatorOpacus()
 
         # Compute with base batch
         with BatchStatSnapshot(model, X_base):
-            results_base = calculator.compute(model, loss_fn, X_base, y_base, normalize=True)
+            results_base = calculator.compute(
+                model, loss_fn, X_base, y_base, normalize=True
+            )
 
         # Compute with repeated batch
         with BatchStatSnapshot(model, X_repeated):
-            results_repeated = calculator.compute(model, loss_fn, X_repeated, y_repeated, normalize=True)
+            results_repeated = calculator.compute(
+                model, loss_fn, X_repeated, y_repeated, normalize=True
+            )
 
         # Normalized metrics should be batch-size invariant
         assert torch.allclose(
@@ -245,16 +271,20 @@ class TestNormalizationScalingOpacus:
         y_repeated = y_base.repeat(multiplier)
 
         model = MLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
         calculator = SamplewiseCalculatorOpacus()
 
         # Compute with base batch (unnormalized)
         with BatchStatSnapshot(model, X_base):
-            results_base = calculator.compute(model, loss_fn, X_base, y_base, normalize=False)
+            results_base = calculator.compute(
+                model, loss_fn, X_base, y_base, normalize=False
+            )
 
         # Compute with repeated batch (unnormalized)
         with BatchStatSnapshot(model, X_repeated):
-            results_repeated = calculator.compute(model, loss_fn, X_repeated, y_repeated, normalize=False)
+            results_repeated = calculator.compute(
+                model, loss_fn, X_repeated, y_repeated, normalize=False
+            )
 
         # Network gradient norms should scale linearly
         expected_network = results_base["batch_grad_norms_network"] * multiplier
@@ -287,7 +317,7 @@ class TestCrossValidationNormalization:
         y = torch.randint(0, 2, (batch_size,))
 
         model = MLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
 
         functorch_calc = SamplewiseCalculatorFunctorch()
         opacus_calc = SamplewiseCalculatorOpacus()
@@ -322,13 +352,15 @@ class TestCrossValidationNormalization:
         y = torch.randint(0, 2, (batch_size,))
 
         model = MLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
 
         functorch_calc = SamplewiseCalculatorFunctorch()
         opacus_calc = SamplewiseCalculatorOpacus()
 
         # Functorch results
-        results_functorch = functorch_calc.compute(model, loss_fn, X, y, normalize=False)
+        results_functorch = functorch_calc.compute(
+            model, loss_fn, X, y, normalize=False
+        )
 
         # Opacus results
         with BatchStatSnapshot(model, X):
@@ -366,14 +398,18 @@ class TestBatchNormNormalizationScaling:
         y_repeated = y_base.repeat(multiplier)
 
         model = BatchNormMLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
         calculator = SamplewiseCalculatorFunctorch()
 
         with BatchStatSnapshot(model, X_base):
-            results_base = calculator.compute(model, loss_fn, X_base, y_base, normalize=True)
+            results_base = calculator.compute(
+                model, loss_fn, X_base, y_base, normalize=True
+            )
 
         with BatchStatSnapshot(model, X_repeated):
-            results_repeated = calculator.compute(model, loss_fn, X_repeated, y_repeated, normalize=True)
+            results_repeated = calculator.compute(
+                model, loss_fn, X_repeated, y_repeated, normalize=True
+            )
 
         assert torch.allclose(
             results_base["batch_grad_norms_network"],
@@ -403,14 +439,18 @@ class TestBatchNormNormalizationScaling:
         y_repeated = y_base.repeat(multiplier)
 
         model = BatchNormMLP()
-        loss_fn = nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = nn.CrossEntropyLoss(reduction="mean")
         calculator = SamplewiseCalculatorOpacus()
 
         with BatchStatSnapshot(model, X_base):
-            results_base = calculator.compute(model, loss_fn, X_base, y_base, normalize=True)
+            results_base = calculator.compute(
+                model, loss_fn, X_base, y_base, normalize=True
+            )
 
         with BatchStatSnapshot(model, X_repeated):
-            results_repeated = calculator.compute(model, loss_fn, X_repeated, y_repeated, normalize=True)
+            results_repeated = calculator.compute(
+                model, loss_fn, X_repeated, y_repeated, normalize=True
+            )
 
         assert torch.allclose(
             results_base["batch_grad_norms_network"],
