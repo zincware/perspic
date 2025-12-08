@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from perspic import ApproximateLinearizer, BaseLinearizer, ExactLinearizer, Linearizer
+from perspic import ApproximateLinearizer, BaseLinearizer, ExactLinearizer
 from perspic.utils import BatchStatSnapshot
 
 
@@ -55,7 +55,7 @@ class TestMultipleLearningRates:
         x = torch.randn(4, 10)
         y = torch.randint(0, 5, (4,))
         eta_array = [1e-1, 1e-2, 1e-3, 1e-6]
-        linearizer = Linearizer(eta_array=eta_array)
+        linearizer = ApproximateLinearizer(eta_array=eta_array)
 
         results = linearizer.compute(
             model=model,
@@ -105,10 +105,12 @@ class TestLoadModelState:
 
     def test_load_accepts_bytes_state(self, simple_model, device):
         simple_model = simple_model.to(device)
-        saved_bytes = Linearizer._save_model_state(simple_model)
+        saved_bytes = ApproximateLinearizer._save_model_state(simple_model)
         assert isinstance(saved_bytes, bytes)
 
-        result = Linearizer._load_model_state(simple_model, saved_bytes, device=device)
+        result = ApproximateLinearizer._load_model_state(
+            simple_model, saved_bytes, device=device
+        )
         assert isinstance(result, torch.nn.Module)
         assert result is simple_model
 
@@ -116,49 +118,57 @@ class TestLoadModelState:
         simple_model = simple_model.to(device)
         invalid_state = "not bytes"
         with pytest.raises((TypeError, pickle.UnpicklingError, EOFError)):
-            Linearizer._load_model_state(simple_model, invalid_state)
+            ApproximateLinearizer._load_model_state(simple_model, invalid_state)
 
     def test_load_rejects_dict_state(self, simple_model, device):
         simple_model = simple_model.to(device)
         state_dict = simple_model.state_dict()
         with pytest.raises((TypeError, pickle.UnpicklingError)):
-            Linearizer._load_model_state(simple_model, state_dict)
+            ApproximateLinearizer._load_model_state(simple_model, state_dict)
 
     def test_load_empty_model_state(self, simple_model, device):
         simple_model = simple_model.to(device)
         empty_state = b""
         with pytest.raises((KeyError, EOFError)):
-            Linearizer._load_model_state(simple_model, empty_state)
+            ApproximateLinearizer._load_model_state(simple_model, empty_state)
 
     def test_load_accepts_optional_device(self, simple_model, device):
         simple_model = simple_model.to(device)
-        saved_bytes = Linearizer._save_model_state(simple_model)
+        saved_bytes = ApproximateLinearizer._save_model_state(simple_model)
 
         # Should accept None
-        result1 = Linearizer._load_model_state(simple_model, saved_bytes, device=None)
+        result1 = ApproximateLinearizer._load_model_state(
+            simple_model, saved_bytes, device=None
+        )
         assert isinstance(result1, torch.nn.Module)
 
         # Should accept torch.device
-        result2 = Linearizer._load_model_state(simple_model, saved_bytes, device=device)
+        result2 = ApproximateLinearizer._load_model_state(
+            simple_model, saved_bytes, device=device
+        )
         assert isinstance(result2, torch.nn.Module)
 
     def test_load_rejects_invalid_device_type(self, simple_model, device):
         simple_model = simple_model.to(device)
-        saved_bytes = Linearizer._save_model_state(simple_model)
+        saved_bytes = ApproximateLinearizer._save_model_state(simple_model)
 
         # Should raise or handle gracefully
         with pytest.raises((TypeError, RuntimeError)):
-            Linearizer._load_model_state(simple_model, saved_bytes, device="invalid")
+            ApproximateLinearizer._load_model_state(
+                simple_model, saved_bytes, device="invalid"
+            )
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_load_moves_tensors_to_gpu(self, simple_model):
         """Test that load can move model to GPU."""
         simple_model = simple_model.cuda()
-        saved_bytes = Linearizer._save_model_state(simple_model)
+        saved_bytes = ApproximateLinearizer._save_model_state(simple_model)
 
         # Load to GPU
         device = torch.device("cuda")
-        Linearizer._load_model_state(simple_model, saved_bytes, device=device)
+        ApproximateLinearizer._load_model_state(
+            simple_model, saved_bytes, device=device
+        )
 
         # Verify all params are on GPU
         for param in simple_model.parameters():
@@ -172,35 +182,35 @@ class TestSaveModelState:
 
     def test_save_returns_bytes(self, simple_model, device):
         simple_model = simple_model.to(device)
-        state_bytes = Linearizer._save_model_state(simple_model)
+        state_bytes = ApproximateLinearizer._save_model_state(simple_model)
         assert isinstance(state_bytes, bytes)
 
     def test_save_non_empty_bytes(self, simple_model, device):
         simple_model = simple_model.to(device)
-        state_bytes = Linearizer._save_model_state(simple_model)
+        state_bytes = ApproximateLinearizer._save_model_state(simple_model)
         assert len(state_bytes) > 0
 
     def test_save_consistent_across_calls(self, simple_model, device):
         simple_model = simple_model.to(device)
-        saved_bytes_1 = Linearizer._save_model_state(simple_model)
-        saved_bytes_2 = Linearizer._save_model_state(simple_model)
+        saved_bytes_1 = ApproximateLinearizer._save_model_state(simple_model)
+        saved_bytes_2 = ApproximateLinearizer._save_model_state(simple_model)
         assert saved_bytes_1 == saved_bytes_2
 
     def test_save_two_different_models(self, simple_model, complex_model, device):
         simple_model = simple_model.to(device)
         complex_model = complex_model.to(device)
-        saved_bytes_1 = Linearizer._save_model_state(simple_model)
-        saved_bytes_2 = Linearizer._save_model_state(complex_model)
+        saved_bytes_1 = ApproximateLinearizer._save_model_state(simple_model)
+        saved_bytes_2 = ApproximateLinearizer._save_model_state(complex_model)
         assert saved_bytes_1 != saved_bytes_2
 
     def test_save_differs_when_parameters_change(self, simple_model, device):
         simple_model = simple_model.to(device)
-        saved_bytes_1 = Linearizer._save_model_state(simple_model)
+        saved_bytes_1 = ApproximateLinearizer._save_model_state(simple_model)
         with torch.no_grad():
             for param in simple_model.parameters():
                 param.fill_(999.0)
                 break
-        saved_bytes_2 = Linearizer._save_model_state(simple_model)
+        saved_bytes_2 = ApproximateLinearizer._save_model_state(simple_model)
         assert saved_bytes_1 != saved_bytes_2
 
 
@@ -212,7 +222,7 @@ class TestProbeTrainStepCore:
         x = torch.randn(4, 10)
         y = torch.randint(0, 5, (4,))
 
-        linearizer = Linearizer([1e-3])
+        linearizer = ApproximateLinearizer([1e-3])
         linearizer.compute(model=simple_model, criterion=criterion, x=x, y=y)
 
         # All gradients should be None or zero
@@ -237,7 +247,7 @@ class TestProbeTrainStepCore:
                 raise RuntimeError("Mock error")
             return original_criterion(pred, target)
 
-        linearizer = Linearizer([1e-3])
+        linearizer = ApproximateLinearizer([1e-3])
         results = linearizer.compute(
             model=simple_model,
             criterion=failing_criterion,
@@ -256,7 +266,7 @@ class TestProbeTrainStepCore:
         y = torch.randint(0, 5, (4,))
         eta_array = [1e-1, 1e-3, 1e-5, 1e-7]
 
-        linearizer = Linearizer(eta_array)
+        linearizer = ApproximateLinearizer(eta_array)
         results = linearizer.compute(
             model=simple_model,
             criterion=criterion,
@@ -275,13 +285,13 @@ class TestSaveLoadIntegration:
         """Test complete save and load cycle preserves model state."""
         original_state = {k: v.clone() for k, v in simple_model.state_dict().items()}
 
-        saved_bytes = Linearizer._save_model_state(simple_model)
+        saved_bytes = ApproximateLinearizer._save_model_state(simple_model)
 
         with torch.no_grad():
             for param in simple_model.parameters():
                 param.fill_(0.0)
 
-        result = Linearizer._load_model_state(simple_model, saved_bytes)
+        result = ApproximateLinearizer._load_model_state(simple_model, saved_bytes)
 
         assert result is simple_model
         for key in original_state:
@@ -294,11 +304,11 @@ class TestSaveLoadIntegration:
         original_state = {k: v.clone() for k, v in simple_model.state_dict().items()}
 
         for _ in range(3):
-            saved_bytes = Linearizer._save_model_state(simple_model)
+            saved_bytes = ApproximateLinearizer._save_model_state(simple_model)
             with torch.no_grad():
                 for param in simple_model.parameters():
                     param.add_(torch.randn_like(param) * 0.1)
-            Linearizer._load_model_state(simple_model, saved_bytes)
+            ApproximateLinearizer._load_model_state(simple_model, saved_bytes)
 
         for key in original_state:
             assert torch.allclose(
@@ -503,7 +513,3 @@ class TestBaseLinearizer:
         """Test that BaseLinearizer cannot be instantiated directly."""
         with pytest.raises(TypeError):
             BaseLinearizer()
-
-    def test_linearizer_is_alias_for_approximate(self):
-        """Test that Linearizer is an alias for ApproximateLinearizer."""
-        assert Linearizer is ApproximateLinearizer

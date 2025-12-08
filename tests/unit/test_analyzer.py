@@ -12,7 +12,6 @@ from perspic.analyzer import analyzer
 from perspic.calculator.linearizer import (
     ApproximateLinearizer,
     ExactLinearizer,
-    Linearizer,
 )
 from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
 from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus

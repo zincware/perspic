@@ -283,7 +283,3 @@ class ExactLinearizer(BaseLinearizer):
 
         # Return with eta=-1 to indicate exact method
         return {-1: (loss_val, perturbed_loss, delta_loss)}
-
-
-# Backwards compatibility alias
-Linearizer = ApproximateLinearizer

@@ -7,7 +7,6 @@ from perspic.calculator.linearizer import (
     ApproximateLinearizer,
     BaseLinearizer,
     ExactLinearizer,
-    Linearizer,
 )
 from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
 from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
@@ -21,7 +20,6 @@ __all__ = [
     BaseLinearizer.__name__,
     ApproximateLinearizer.__name__,
     ExactLinearizer.__name__,
-    Linearizer.__name__,  # Backwards compatibility alias
     SamplewiseCalculatorFunctorch.__name__,
     SamplewiseCalculatorOpacus.__name__,
     LogarithmicWindowSchedule.__name__,

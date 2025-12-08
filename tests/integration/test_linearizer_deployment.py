@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from perspic import Linearizer
+from perspic import ApproximateLinearizer
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def complex_model():
     )
 
 
-class TestLinearizer:
+class TestApproximateLinearizer:
     """Tests for Linearizer linearizer functionality."""
 
     def test_simple_model_matches_analytical_gradient(self, simple_model):
@@ -54,7 +54,7 @@ class TestLinearizer:
         simple_model.load_state_dict(initial_state)
         simple_model.zero_grad()
         eta_array = [1e-3, 1e-4, 1e-5]
-        results = Linearizer(eta_array).compute(
+        results = ApproximateLinearizer(eta_array).compute(
             model=simple_model,
             criterion=criterion,
             x=x,
@@ -93,7 +93,7 @@ class TestLinearizer:
             model = complex_model()
 
             # Probe all etas with same model
-            linearizer = Linearizer(etas)
+            linearizer = ApproximateLinearizer(etas)
             results = linearizer.compute(
                 model=model,
                 criterion=criterion,
