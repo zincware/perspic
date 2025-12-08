@@ -3,11 +3,7 @@ Perspic: A tool to study neural network training dynamics.
 """
 
 from perspic.analyzer import analyzer
-from perspic.calculator.linearizer import (
-    ApproximateLinearizer,
-    BaseLinearizer,
-    ExactLinearizer,
-)
+from perspic.calculator.linearizer import Linearizer
 from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
 from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
 from perspic.logger import (
@@ -17,9 +13,7 @@ from perspic.logger import (
 
 __all__ = [
     analyzer.__name__,
-    BaseLinearizer.__name__,
-    ApproximateLinearizer.__name__,
-    ExactLinearizer.__name__,
+    Linearizer.__name__,
     SamplewiseCalculatorFunctorch.__name__,
     SamplewiseCalculatorOpacus.__name__,
     LogarithmicWindowSchedule.__name__,

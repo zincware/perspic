@@ -1063,3 +1063,176 @@ class TestAnalyzerWithScheduling:
         trainer.fit(model, simple_dataloader)
 
         assert call_count["value"] == 2
+
+
+class TestAnalyzerWithCrossResponseLoader:
+    """Test analyzer with cross_response_loader functionality."""
+
+    def test_cross_response_loader_iterates_through_batches(
+        self, simple_lightning_module
+    ):
+        """Test that cross_response_loader batches are iterated correctly."""
+        torch.manual_seed(42)
+
+        # Training data
+        train_x = torch.randn(32, 10)
+        train_y = torch.randint(0, 2, (32,))
+        train_dataset = TensorDataset(train_x, train_y)
+        train_loader = DataLoader(train_dataset, batch_size=8)
+
+        # Cross-response data (smaller dataset to test cycling)
+        cross_x = torch.randn(16, 10)
+        cross_y = torch.randint(0, 2, (16,))
+        cross_dataset = TensorDataset(cross_x, cross_y)
+        cross_loader = DataLoader(cross_dataset, batch_size=8)
+
+        model = analyzer(
+            simple_lightning_module,
+            cross_response_loader=cross_loader,
+        )
+
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+        )
+        trainer.fit(model, train_loader)
+
+        # Training should complete without errors
+        # Cross loader has 2 batches, train has 4, so it should cycle
+
+    def test_cross_response_metrics_logged(self, simple_lightning_module):
+        """Test that cross-response metrics are logged when loader is provided."""
+        torch.manual_seed(42)
+
+        train_x = torch.randn(16, 10)
+        train_y = torch.randint(0, 2, (16,))
+        train_dataset = TensorDataset(train_x, train_y)
+        train_loader = DataLoader(train_dataset, batch_size=8)
+
+        cross_x = torch.randn(8, 10)
+        cross_y = torch.randint(0, 2, (8,))
+        cross_dataset = TensorDataset(cross_x, cross_y)
+        cross_loader = DataLoader(cross_dataset, batch_size=8)
+
+        model = analyzer(
+            simple_lightning_module,
+            cross_response_loader=cross_loader,
+            log_metrics=True,
+        )
+
+        # Capture logged metrics
+        logged_metrics = {}
+
+        def mock_log(name, value, *args, **kwargs):
+            logged_metrics[name] = value
+
+        model.log = mock_log
+
+        # Run one training step manually
+        batch = (train_x[:8], train_y[:8])
+        model._before_training_step(batch, 0)
+
+        # Verify cross-response metrics were logged
+        assert "cross_loss" in logged_metrics
+        assert "cross_grad_dot_product" in logged_metrics
+
+    def test_no_cross_metrics_without_loader(self, simple_lightning_module):
+        """Test that cross-response metrics are NOT logged without loader."""
+        torch.manual_seed(42)
+
+        train_x = torch.randn(8, 10)
+        train_y = torch.randint(0, 2, (8,))
+
+        model = analyzer(
+            simple_lightning_module,
+            cross_response_loader=None,  # No cross loader
+            log_metrics=True,
+        )
+
+        logged_metrics = {}
+
+        def mock_log(name, value, *args, **kwargs):
+            logged_metrics[name] = value
+
+        model.log = mock_log
+
+        batch = (train_x, train_y)
+        model._before_training_step(batch, 0)
+
+        # Verify cross-response metrics were NOT logged
+        assert "cross_loss" not in logged_metrics
+        assert "cross_grad_dot_product" not in logged_metrics
+        # But self metrics should still be there
+        assert "loss" in logged_metrics
+        assert "grad_norm_squared" in logged_metrics
+
+    def test_cross_loader_cycles_when_exhausted(self, simple_lightning_module):
+        """Test that cross_response_loader cycles back when exhausted."""
+        torch.manual_seed(42)
+
+        # Train data: 4 batches
+        train_x = torch.randn(32, 10)
+        train_y = torch.randint(0, 2, (32,))
+        train_dataset = TensorDataset(train_x, train_y)
+        train_loader = DataLoader(train_dataset, batch_size=8)
+
+        # Cross data: only 1 batch (will need to cycle 4 times)
+        cross_x = torch.randn(8, 10)
+        cross_y = torch.randint(0, 2, (8,))
+        cross_dataset = TensorDataset(cross_x, cross_y)
+        cross_loader = DataLoader(cross_dataset, batch_size=8)
+
+        model = analyzer(
+            simple_lightning_module,
+            cross_response_loader=cross_loader,
+        )
+
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+        )
+
+        # Should complete without StopIteration error
+        trainer.fit(model, train_loader)
+
+    def test_cross_response_values_are_valid(self, simple_lightning_module):
+        """Test that cross-response values are numerically valid."""
+        torch.manual_seed(42)
+
+        train_x = torch.randn(8, 10)
+        train_y = torch.randint(0, 2, (8,))
+
+        cross_x = torch.randn(8, 10)
+        cross_y = torch.randint(0, 2, (8,))
+        cross_dataset = TensorDataset(cross_x, cross_y)
+        cross_loader = DataLoader(cross_dataset, batch_size=8)
+
+        model = analyzer(
+            simple_lightning_module,
+            cross_response_loader=cross_loader,
+            log_metrics=True,
+        )
+
+        logged_metrics = {}
+
+        def mock_log(name, value, *args, **kwargs):
+            logged_metrics[name] = value
+
+        model.log = mock_log
+
+        batch = (train_x, train_y)
+        model._before_training_step(batch, 0)
+
+        # Cross loss should be a valid positive number
+        assert isinstance(logged_metrics["cross_loss"], float)
+        assert logged_metrics["cross_loss"] > 0
+
+        # Cross grad dot product can be positive or negative
+        assert isinstance(logged_metrics["cross_grad_dot_product"], float)
+        assert not torch.isnan(torch.tensor(logged_metrics["cross_grad_dot_product"]))

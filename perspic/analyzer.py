@@ -2,13 +2,10 @@ import warnings
 from typing import Optional
 
 import pytorch_lightning as pl
+import torch
 
 from perspic.calculator.coupling import CouplingCalculator
-from perspic.calculator.linearizer import (
-    ApproximateLinearizer,
-    BaseLinearizer,
-    ExactLinearizer,
-)
+from perspic.calculator.linearizer import Linearizer
 from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
 from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
 from perspic.logger import LogarithmicWindowSchedule
@@ -23,8 +20,7 @@ def analyzer(
     opacus_strict: bool = False,
     analyze_every: Optional[int] = None,
     analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
-    exact_linearizer: bool = True,
-    linearizing_lrs: Optional[list[float]] = None,
+    cross_response_loader: Optional[torch.utils.data.DataLoader] = None,
     **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -51,12 +47,10 @@ def analyzer(
             analysis runs only at the scheduled steps.
             If both analyze_every and analysis_schedule are provided, analysis_schedule
             takes precedence.
-        exact_linearizer: If True (default), use ExactLinearizer which computes
-            ||∇L||² directly. If False, use ApproximateLinearizer
-            which probes with virtual gradient steps.
-        linearizing_lrs: List of learning rates for linearization probing.
-            Required for ApproximateLinearizer. Ignored for ExactLinearizer.
-            Defaults to [1e-3] when exact_linearizer=False.
+        cross_response_loader: Optional DataLoader for computing cross-batch
+            linear response. When provided, the linearizer computes both the
+            "self" response (gradient on training batch) and "cross" response
+            (gradient dot product between training batch and cross batch).
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -66,16 +60,12 @@ def analyzer(
 
     Raises:
         ValueError: If sample_wise_engine is not 'functorch' or 'opacus'.
-        ValueError: If linearizing_lrs is provided with exact_linearizer=True.
         AttributeError: If the wrapped module doesn't have a 'criterion'
             attribute.
 
     Examples:
-        # Analyze every step with approximate linearization (default)
+        # Analyze every step
         model = analyzer(MyModule, model=backbone, lr=0.01)
-
-        # Analyze with exact linearization
-        model = analyzer(MyModule, enable_exact_linearization=True, model=backbone, lr=0.01)
 
         # Analyze every 100 steps
         model = analyzer(MyModule, analyze_every=100, model=backbone, lr=0.01)
@@ -84,6 +74,10 @@ def analyzer(
         from perspic import logarithmic_windows
         schedule = logarithmic_windows(max_steps=10000, points_per_decade=5)
         model = analyzer(MyModule, analysis_schedule=schedule, model=backbone, lr=0.01)
+
+        # Analyze with cross-batch response
+        cross_loader = DataLoader(cross_dataset, batch_size=32)
+        model = analyzer(MyModule, cross_response_loader=cross_loader, model=backbone, lr=0.01)
 
     Note:
         The lightning_module.__call__ method must contain the ENTIRE forward pass logic.
@@ -121,8 +115,7 @@ def analyzer(
             opacus_strict=opacus_strict,
             analyze_every=analyze_every,
             analysis_schedule=analysis_schedule,
-            exact_linearizer=exact_linearizer,
-            linearizing_lrs=linearizing_lrs,
+            cross_response_loader=cross_response_loader,
             **model_kwargs,
         ):
             super().__init__(**model_kwargs)
@@ -142,26 +135,19 @@ def analyzer(
             if analyze_every is not None and analyze_every < 1:
                 raise ValueError("analyze_every must be a positive integer")
 
-            # Validate linearizer configuration
-            if exact_linearizer and linearizing_lrs is not None:
-                raise ValueError(
-                    "linearizing_lrs cannot be used with exact_linearizer=True. "
-                    "ExactLinearizer does not support multiple learning rates."
-                )
-
             if sample_wise_engine == "functorch":
                 self.sample_calc = SamplewiseCalculatorFunctorch()
             elif sample_wise_engine == "opacus":
                 self.sample_calc = SamplewiseCalculatorOpacus(strict=opacus_strict)
 
-            # Initialize the appropriate linearizer
-            if exact_linearizer:
-                self.linearizer = ExactLinearizer()
-            else:
-                # Default to [1e-3] if not provided
-                if linearizing_lrs is None:
-                    linearizing_lrs = [1e-3]
-                self.linearizer = ApproximateLinearizer(eta_array=linearizing_lrs)
+            # Initialize the linearizer
+            self.linearizer = Linearizer()
+
+            # Set up cross-response loader iterator
+            self.cross_response_loader = cross_response_loader
+            self._cross_response_iter = None
+            if cross_response_loader is not None:
+                self._cross_response_iter = iter(cross_response_loader)
 
             self.coupling_calc = CouplingCalculator()
             self.disable_analyzer = disable_analyzer
@@ -260,6 +246,19 @@ def analyzer(
 
             x, y = batch
 
+            # Get cross-response batch if available
+            x2, y2 = None, None
+            if self._cross_response_iter is not None:
+                try:
+                    x2, y2 = next(self._cross_response_iter)
+                except StopIteration:
+                    # Reset iterator and get first batch
+                    self._cross_response_iter = iter(self.cross_response_loader)
+                    x2, y2 = next(self._cross_response_iter)
+                # Move to same device as training batch
+                x2 = x2.to(x.device)
+                y2 = y2.to(y.device)
+
             with BatchStatSnapshot(self.model, x):
                 # Compute samplewise metrics
                 samples_results = self.sample_calc.compute(
@@ -272,23 +271,20 @@ def analyzer(
                 probe_results = self.linearizer.compute(
                     model=self.model,
                     criterion=self.criterion,
-                    x=x,
-                    y=y,
+                    x1=x,
+                    y1=y,
+                    x2=x2,
+                    y2=y2,
                 )
 
-                # Get the first result for coupling calculation
-                first_eta = list(probe_results.keys())[0]
-                loss_before, loss_after, delta_loss = probe_results[first_eta]
+                # Get "self" result for coupling calculation
+                loss_self, _, delta_loss_self = probe_results["self"]
 
-                # Compute coupling value
+                # Compute coupling value (using self response)
                 coupling_value = self.coupling_calc.calculate(
-                    loss_before=loss_before,
-                    loss_after=loss_after,
-                    delta_loss=delta_loss,
+                    delta_loss=delta_loss_self,
                     chi_loss=samples_results["batch_grad_norms_loss"],
                     chi_net=samples_results["batch_grad_norms_network"],
-                    learning_rate_of_virtual_step=first_eta if first_eta > 0 else None,
-                    exact_linearizer=self.linearizer.exact_linearizer,
                 )
 
             # Log results with fixed metric names
@@ -298,25 +294,19 @@ def analyzer(
                 self.log("coupling", coupling_value)
                 self.log("batch_size", x.shape[0])
                 self.log("analysis_step", self.global_step)
-                for eta, (loss, perturbed_loss, delta_loss) in probe_results.items():
-                    if self.linearizer.exact_linearizer:
-                        # Log exact linearizer results
-                        self.log("lin_loss", loss)
-                        self.log(
-                            "lin_grad_norm_squared", -delta_loss if delta_loss else None
-                        )
-                    else:
-                        # Log approximate linearizer results
-                        eta_str = f"{eta:.0e}"
-                        self.log(f"lin_loss_before_eta_{eta_str}", loss)
-                        if perturbed_loss is not None:
-                            self.log(f"lin_loss_after_eta_{eta_str}", perturbed_loss)
-                        if delta_loss is not None:
-                            self.log(
-                                f"lin_loss_delta_eta_{eta_str}",
-                                delta_loss,
-                            )
-                self.log("loss", loss_before)
+
+                # Log self response
+                loss_self, perturbed_loss_self, delta_loss_self = probe_results["self"]
+                self.log("loss", loss_self)
+                self.log("grad_norm_squared", -delta_loss_self)
+
+                # Log cross response if available
+                if probe_results["cross"] is not None:
+                    loss_cross, perturbed_loss_cross, delta_loss_cross = probe_results[
+                        "cross"
+                    ]
+                    self.log("cross_loss", loss_cross)
+                    self.log("cross_grad_dot_product", -delta_loss_cross)
 
                 # Log window tracking info if using logarithmic schedule
                 if self.analysis_schedule is not None:
@@ -349,7 +339,6 @@ def analyzer(
         opacus_strict=opacus_strict,
         analyze_every=analyze_every,
         analysis_schedule=analysis_schedule,
-        exact_linearizer=exact_linearizer,
-        linearizing_lrs=linearizing_lrs,
+        cross_response_loader=cross_response_loader,
         **model_kwargs,
     )
