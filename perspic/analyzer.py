@@ -20,7 +20,7 @@ def analyzer(
     opacus_strict: bool = False,
     analyze_every: Optional[int] = None,
     analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
-    cross_response_loader: Optional[torch.utils.data.DataLoader] = None,
+    cross_response: bool = False,
     **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -47,10 +47,9 @@ def analyzer(
             analysis runs only at the scheduled steps.
             If both analyze_every and analysis_schedule are provided, analysis_schedule
             takes precedence.
-        cross_response_loader: Optional DataLoader for computing cross-batch
-            linear response. When provided, the linearizer computes both the
-            "self" response (gradient on training batch) and "cross" response
-            (gradient dot product between training batch and cross batch).
+        cross_response: If True, enables cross-batch response analysis and assumes
+            the training batch is a dict with 'train' and 'measure' keys.
+            Defaults to False.
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -76,8 +75,12 @@ def analyzer(
         model = analyzer(MyModule, analysis_schedule=schedule, model=backbone, lr=0.01)
 
         # Analyze with cross-batch response
-        cross_loader = DataLoader(cross_dataset, batch_size=32)
-        model = analyzer(MyModule, cross_response_loader=cross_loader, model=backbone, lr=0.01)
+        # Note: Requires a CombinedLoader or similar that yields a dict with
+        # 'train' and 'measure' keys
+        from pytorch_lightning.trainer.supporters import CombinedLoader
+        loaders = {"train": train_loader, "measure": measure_loader}
+        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
+        model = analyzer(MyModule, cross_response=True, model=backbone, lr=0.01)
 
     Note:
         The lightning_module.__call__ method must contain the ENTIRE forward pass logic.
@@ -115,7 +118,7 @@ def analyzer(
             opacus_strict=opacus_strict,
             analyze_every=analyze_every,
             analysis_schedule=analysis_schedule,
-            cross_response_loader=cross_response_loader,
+            cross_response=cross_response,
             **model_kwargs,
         ):
             super().__init__(**model_kwargs)
@@ -144,10 +147,7 @@ def analyzer(
             self.linearizer = Linearizer()
 
             # Set up cross-response loader iterator
-            self.cross_response_loader = cross_response_loader
-            self._cross_response_iter = None
-            if cross_response_loader is not None:
-                self._cross_response_iter = iter(cross_response_loader)
+            self.cross_response = cross_response
 
             self.coupling_calc = CouplingCalculator()
             self.disable_analyzer = disable_analyzer
@@ -193,13 +193,29 @@ def analyzer(
             Returns:
                 Output from the wrapped module's training_step.
             """
+            batch_measure = None
+            if self.cross_response:
+                # Check if cross-response batch is provided
+                if (
+                    not isinstance(batch, dict)
+                    or "train" not in batch
+                    and "measure" not in batch
+                ):
+                    raise ValueError(
+                        "When cross_response is True, the training batch must be a "
+                        "dict with 'train' and 'measure' keys."
+                        "This can be achieved by using a CombinedLoader "
+                    )
+                batch_measure = batch["measure"]
+                batch = batch["train"]
+
             # Initializing manual optimization
             opt = self.optimizers()
             opt.zero_grad()
 
             # BEFORE logic
             if not self.disable_analyzer:
-                self._before_training_step(batch, batch_idx)
+                self._before_training_step(batch, batch_idx, batch_measure)
 
             # Original training step
             output = super().training_step(batch, batch_idx)
@@ -226,7 +242,7 @@ def analyzer(
             # Default: analyze every step
             return True
 
-        def _before_training_step(self, batch, batch_idx):
+        def _before_training_step(self, batch, batch_idx, cross_response_batch=None):
             """Hook executed before the wrapped training step.
 
             Computes analysis metrics including sample-wise gradients and
@@ -236,6 +252,7 @@ def analyzer(
             Args:
                 batch: Training batch containing input data and labels.
                 batch_idx: Index of the current batch.
+                cross_response_batch: Optional batch for cross-response analysis.
 
             Returns:
                 None
@@ -248,16 +265,8 @@ def analyzer(
 
             # Get cross-response batch if available
             x2, y2 = None, None
-            if self._cross_response_iter is not None:
-                try:
-                    x2, y2 = next(self._cross_response_iter)
-                except StopIteration:
-                    # Reset iterator and get first batch
-                    self._cross_response_iter = iter(self.cross_response_loader)
-                    x2, y2 = next(self._cross_response_iter)
-                # Move to same device as training batch
-                x2 = x2.to(x.device)
-                y2 = y2.to(y.device)
+            if self.cross_response:
+                x2, y2 = cross_response_batch
 
             samples_results = {}
             with BatchStatSnapshot(self.model, x):
@@ -276,7 +285,6 @@ def analyzer(
                         x2,
                         y2,
                     )
-                    print(samples_results["self"])
                     samples_results["cross"] = self.sample_calc.compute_cross_metrics(
                         sample_wise_metrics_self=samples_results["self"],
                         sample_wise_metrics_cross=fake_response,
@@ -301,27 +309,34 @@ def analyzer(
                     chi_loss=samples_results["self"]["batch_grad_norms_loss"],
                     chi_net=samples_results["self"]["batch_grad_norms_network"],
                 )
+                if self.cross_response and "cross" in probe_results:
+                    # Optionally, compute coupling for cross response as well
+                    loss_cross, _, delta_loss_cross = probe_results["cross"]
+                    coupling_value_cross = self.coupling_calc.calculate(
+                        delta_loss=delta_loss_cross,
+                        chi_loss=samples_results["cross"]["batch_grad_norms_loss"],
+                        chi_net=samples_results["cross"]["batch_grad_norms_network"],
+                    )
 
             # Log results with fixed metric names
             if self.log_metrics:
-                self.log("chi_net", samples_results["self"]["batch_grad_norms_network"])
-                self.log("chi_loss", samples_results["self"]["batch_grad_norms_loss"])
-                self.log("coupling", coupling_value)
-                self.log("batch_size", x.shape[0])
-                self.log("analysis_step", self.global_step)
-
-                # Log self response
-                loss_self, perturbed_loss_self, delta_loss_self = probe_results["self"]
-                self.log("loss", loss_self)
-                self.log("grad_norm_squared", -delta_loss_self)
+                self._log_analysis_results(
+                    prefix="",
+                    samples_result=samples_results["self"],
+                    probe_result=probe_results["self"],
+                    coupling_value=coupling_value,
+                    batch_size=x.shape[0],
+                )
 
                 # Log cross response if available
-                if probe_results["cross"] is not None:
-                    loss_cross, perturbed_loss_cross, delta_loss_cross = probe_results[
-                        "cross"
-                    ]
-                    self.log("cross_loss", loss_cross)
-                    self.log("cross_grad_dot_product", -delta_loss_cross)
+                if "cross" in samples_results and samples_results["cross"] is not None:
+                    self._log_analysis_results(
+                        prefix="cross_",
+                        samples_result=samples_results["cross"],
+                        probe_result=probe_results["cross"],
+                        coupling_value=coupling_value_cross,
+                        batch_size=x2.shape[0] if x2 is not None else 0,
+                    )
 
                 # Log window tracking info if using logarithmic schedule
                 if self.analysis_schedule is not None:
@@ -334,6 +349,44 @@ def analyzer(
                         self.log("window_width", window_info["window_width"])
 
             return None
+
+        def _log_analysis_results(
+            self,
+            prefix: str,
+            samples_result: dict,
+            probe_result: tuple,
+            coupling_value: Optional[float],
+            batch_size: int,
+        ):
+            """Helper method to log analysis metrics with a given prefix."""
+            # Log sample-wise metrics
+            if "batch_grad_norms_network" in samples_result:
+                self.log(f"{prefix}chi_net", samples_result["batch_grad_norms_network"])
+            if "batch_grad_norms_loss" in samples_result:
+                self.log(f"{prefix}chi_loss", samples_result["batch_grad_norms_loss"])
+
+            # Log coupling if provided
+            if coupling_value is not None:
+                self.log(f"{prefix}coupling", coupling_value)
+
+            self.log(f"{prefix}batch_size", batch_size)
+
+            # Only log analysis_step once (usually with empty prefix)
+            if prefix == "":
+                self.log("analysis_step", self.global_step)
+
+            # Log probe results (linearization)
+            if probe_result is not None:
+                loss, _, delta_loss = probe_result
+                self.log(f"{prefix}loss", loss)
+
+                # For cross response, we might want to name it differently or keep consistent
+                # The original code used 'grad_norm_squared' for self and 'cross_grad_dot_product' for cross
+                # We can standardize or keep the distinction based on prefix
+                metric_name = (
+                    "grad_norm_squared" if prefix == "" else "grad_dot_product"
+                )
+                self.log(f"{prefix}{metric_name}", -delta_loss)
 
         def _after_training_step(self, batch, batch_idx, output):
             """Hook executed after the wrapped training step.
@@ -354,6 +407,6 @@ def analyzer(
         opacus_strict=opacus_strict,
         analyze_every=analyze_every,
         analysis_schedule=analysis_schedule,
-        cross_response_loader=cross_response_loader,
+        cross_response=cross_response,
         **model_kwargs,
     )

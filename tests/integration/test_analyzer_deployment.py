@@ -9,8 +9,10 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pytorch_lightning.utilities.combined_loader import CombinedLoader
 from torch.utils.data import DataLoader, TensorDataset
 
+import perspic
 from perspic.analyzer import analyzer
 
 
@@ -1014,10 +1016,10 @@ class TestAnalyzerWithScheduling:
         original_before = model._before_training_step
         call_count = {"value": 0}
 
-        def counting_before(batch, batch_idx):
+        def counting_before(batch, batch_idx, *args, **kwargs):
             if model._should_analyze(model.global_step):
                 call_count["value"] += 1
-            return original_before(batch, batch_idx)
+            return original_before(batch, batch_idx, *args, **kwargs)
 
         model._before_training_step = counting_before
 
@@ -1047,10 +1049,10 @@ class TestAnalyzerWithScheduling:
         call_count = {"value": 0}
         original_before = model._before_training_step
 
-        def counting_before(batch, batch_idx):
+        def counting_before(batch, batch_idx, *args, **kwargs):
             if model._should_analyze(model.global_step):
                 call_count["value"] += 1
-            return original_before(batch, batch_idx)
+            return original_before(batch, batch_idx, *args, **kwargs)
 
         model._before_training_step = counting_before
 
@@ -1086,10 +1088,13 @@ class TestAnalyzerWithCrossResponseLoader:
         cross_dataset = TensorDataset(cross_x, cross_y)
         cross_loader = DataLoader(cross_dataset, batch_size=8)
 
-        model = analyzer(
+        model = perspic.analyzer(
             simple_lightning_module,
-            cross_response_loader=cross_loader,
+            cross_response=True,
         )
+
+        loaders = {"train": train_loader, "measure": cross_loader}
+        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
 
         trainer = pl.Trainer(
             max_epochs=1,
@@ -1098,10 +1103,11 @@ class TestAnalyzerWithCrossResponseLoader:
             enable_model_summary=False,
             logger=False,
         )
-        trainer.fit(model, train_loader)
+        trainer.fit(model, combined_loader)
 
         # Training should complete without errors
         # Cross loader has 2 batches, train has 4, so it should cycle
+        assert True
 
     def test_cross_response_metrics_logged(self, simple_lightning_module):
         """Test that cross-response metrics are logged when loader is provided."""
@@ -1119,7 +1125,7 @@ class TestAnalyzerWithCrossResponseLoader:
 
         model = analyzer(
             simple_lightning_module,
-            cross_response_loader=cross_loader,
+            cross_response=True,
             log_metrics=True,
         )
 
@@ -1133,11 +1139,14 @@ class TestAnalyzerWithCrossResponseLoader:
 
         # Run one training step manually
         batch = (train_x[:8], train_y[:8])
-        model._before_training_step(batch, 0)
+        cross_batch = (cross_x[:8], cross_y[:8])
+        model._before_training_step(batch, 0, cross_response_batch=cross_batch)
 
         # Verify cross-response metrics were logged
         assert "cross_loss" in logged_metrics
         assert "cross_grad_dot_product" in logged_metrics
+        assert "cross_chi_net" in logged_metrics
+        assert "cross_chi_loss" in logged_metrics
 
     def test_no_cross_metrics_without_loader(self, simple_lightning_module):
         """Test that cross-response metrics are NOT logged without loader."""
@@ -1148,7 +1157,7 @@ class TestAnalyzerWithCrossResponseLoader:
 
         model = analyzer(
             simple_lightning_module,
-            cross_response_loader=None,  # No cross loader
+            cross_response=False,  # No cross response
             log_metrics=True,
         )
 
@@ -1187,8 +1196,11 @@ class TestAnalyzerWithCrossResponseLoader:
 
         model = analyzer(
             simple_lightning_module,
-            cross_response_loader=cross_loader,
+            cross_response=True,
         )
+
+        loaders = {"train": train_loader, "measure": cross_loader}
+        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
 
         trainer = pl.Trainer(
             max_epochs=1,
@@ -1199,7 +1211,7 @@ class TestAnalyzerWithCrossResponseLoader:
         )
 
         # Should complete without StopIteration error
-        trainer.fit(model, train_loader)
+        trainer.fit(model, combined_loader)
 
     def test_cross_response_values_are_valid(self, simple_lightning_module):
         """Test that cross-response values are numerically valid."""
@@ -1215,7 +1227,7 @@ class TestAnalyzerWithCrossResponseLoader:
 
         model = analyzer(
             simple_lightning_module,
-            cross_response_loader=cross_loader,
+            cross_response=True,
             log_metrics=True,
         )
 
@@ -1227,7 +1239,8 @@ class TestAnalyzerWithCrossResponseLoader:
         model.log = mock_log
 
         batch = (train_x, train_y)
-        model._before_training_step(batch, 0)
+        cross_batch = (cross_x, cross_y)
+        model._before_training_step(batch, 0, cross_response_batch=cross_batch)
 
         # Cross loss should be a valid positive number
         assert isinstance(logged_metrics["cross_loss"], float)

@@ -308,6 +308,64 @@ class TestBeforeTrainingStepHook:
         assert "grad_norm_squared" in logged_metrics
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(SamplewiseCalculatorOpacus, "compute_cross_metrics")
+    @patch.object(Linearizer, "compute")
+    def test_logs_cross_metrics(
+        self,
+        mock_probe,
+        mock_compute_cross,
+        mock_compute,
+        simple_lightning_module,
+        sample_batch,
+    ):
+        """Test that cross metrics are logged when cross_response=True."""
+        # Mock compute results for self and cross
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(2.5),
+            "batch_grad_norms_loss": torch.tensor(3.7),
+        }
+
+        mock_compute_cross.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.5),
+            "batch_grad_norms_loss": torch.tensor(2.7),
+        }
+
+        # Mock probe results
+        mock_probe.return_value = {
+            "self": (1.0, 0.0, -1.0),
+            "cross": (0.5, 0.0, -0.5),
+        }
+
+        # Initialize analyzer with cross_response=True
+        model = analyzer(simple_lightning_module, log_metrics=True, cross_response=True)
+        model.log = Mock()  # Mock the log method
+        x, y = sample_batch
+
+        # Create a dummy cross batch
+        x2, y2 = x.clone(), y.clone()
+
+        # Call _before_training_step with cross response batch
+        model._before_training_step((x, y), 0, cross_response_batch=(x2, y2))
+
+        # Verify log was called for each metric
+        assert model.log.call_count > 0
+        logged_metrics = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+
+        # Check self metrics
+        assert "chi_net" in logged_metrics
+        assert "chi_loss" in logged_metrics
+        assert "coupling" in logged_metrics
+        assert "loss" in logged_metrics
+        assert "grad_norm_squared" in logged_metrics
+
+        # Check cross metrics
+        assert "cross_chi_net" in logged_metrics
+        assert "cross_chi_loss" in logged_metrics
+        assert "cross_loss" in logged_metrics
+        assert "cross_grad_dot_product" in logged_metrics
+        assert "cross_batch_size" in logged_metrics
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
     @patch.object(Linearizer, "compute")
     def test_no_logging_when_disabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
