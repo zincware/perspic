@@ -1,5 +1,6 @@
 import torch.nn as nn
 from torch import no_grad
+from torch.utils import data
 
 
 class BatchStatSnapshot:
@@ -222,3 +223,84 @@ class BatchStatSnapshot:
 
         # Restore the model's overall training state
         self.model.train(self.original_model_training)
+
+
+class MultiEpochsDataLoader(data.DataLoader):
+    """
+    DataLoader that reuses its worker processes and underlying iterator across epochs.
+
+    This loader creates the DataLoader iterator once during initialization and wraps
+    the original `batch_sampler` with a `RepeatSampler` so that the batch stream
+    appears infinite. Iteration over the loader yields exactly one epoch's worth of
+    batches (as reported by `__len__`), but the internal iterator and workers remain
+    alive between epochs. This is useful for steady-state performance measurements
+    where worker startup overhead and per-epoch shuffling are undesirable.
+
+    Caveats:
+    - The internal iterator is created in `__init__` and reused. Samplers that rely
+      on per-epoch reseeding (e.g., `DistributedSampler`) will NOT change their
+      ordering across epochs unless you explicitly call `set_epoch` on the underlying
+      sampler and recreate the iterator (see `reset_iterator`/`set_epoch` helpers).
+    - This implementation relies on manipulating the private attribute
+      `_DataLoader__initialized` to control iterator creation. This is an
+      implementation detail and may break across PyTorch versions.
+    - If the wrapped iterator dies (worker error), the loader does not currently
+      recreate it automatically.
+
+    Example:
+        loader = MultiEpochsDataLoader(dataset, batch_size=128, shuffle=True, num_workers=4)
+        for epoch in range(10):
+            for batch in loader:
+                train_step(batch)
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.batch_sampler is None:
+            raise ValueError(
+                "MultiEpochsDataLoader requires a batch_sampler (batch_size cannot be None)."
+            )
+
+        self._DataLoader__initialized = False
+        self.batch_sampler = RepeatSampler(self.batch_sampler)
+        self._DataLoader__initialized = True
+        # Create the iterator once so workers are spawned once and reused across epochs.
+        self.iterator = super().__iter__()
+
+    def __len__(self):
+        """
+        Return the number of batches per epoch.
+
+        This delegates to the wrapped sampler when possible. If the wrapped sampler
+        does not support `len()`, a `TypeError` will be raised.
+        """
+        if hasattr(self.batch_sampler.sampler, "__len__"):
+            return len(self.batch_sampler.sampler)
+        raise TypeError("The underlying batch sampler does not define __len__.")
+
+    def __iter__(self):
+        """
+        Yield one epoch's worth of batches by advancing the persistent iterator.
+        """
+        for _ in range(len(self)):
+            yield next(self.iterator)
+
+
+class RepeatSampler:
+    """
+    Wrap a sampler or batch sampler and repeat its output indefinitely.
+
+    This returns an iterator that continuously yields from the wrapped sampler.
+    It's intended for use with `MultiEpochsDataLoader` to provide a never-ending
+    stream of batches while allowing the outer loader to control epoch length.
+
+    Notes:
+    - The wrapped `sampler` must be iterable.
+    """
+
+    def __init__(self, sampler):
+        self.sampler = sampler
+
+    def __iter__(self):
+        while True:
+            yield from iter(self.sampler)
