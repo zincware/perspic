@@ -443,3 +443,71 @@ class TestSamplewiseCalculatorOpacus:
         assert torch.allclose(
             results["batch_grad_norms_loss"], functorch_loss, atol=1e-4, rtol=1e-3
         ), "Opacus loss gradient norms should match functorch for inplace model"
+
+
+class TestRademacherRandomVector:
+    """Tests for the Rademacher random vector generation."""
+
+    def test_rademacher_vector_shape(self):
+        """Verify output shape matches input shape."""
+        from perspic.calculator.samplewise_opacus import _draw_rademacher_random_vector
+
+        shape = (5, 10)
+        v = _draw_rademacher_random_vector(shape, device=torch.device("cpu"))
+        assert v.shape == shape
+
+    def test_rademacher_vector_values(self):
+        """Verify all values are either +1 or -1."""
+        from perspic.calculator.samplewise_opacus import _draw_rademacher_random_vector
+
+        v = _draw_rademacher_random_vector((100, 100), device=torch.device("cpu"))
+        unique_vals = torch.unique(v)
+        assert len(unique_vals) == 2
+        assert -1.0 in unique_vals
+        assert 1.0 in unique_vals
+
+    def test_rademacher_vector_dtype(self):
+        """Verify dtype is respected."""
+        from perspic.calculator.samplewise_opacus import _draw_rademacher_random_vector
+
+        v = _draw_rademacher_random_vector(
+            (10,), device=torch.device("cpu"), dtype=torch.float64
+        )
+        assert v.dtype == torch.float64
+
+
+class TestApproximateWithNParameter:
+    """Tests for the approximate_with_n parameter in SamplewiseCalculatorOpacus."""
+
+    def test_constructor_accepts_approximate_with_n(self):
+        """Verify constructor accepts approximate_with_n parameter."""
+        calc = SamplewiseCalculatorOpacus(strict=False, approximate_with_n=10)
+        assert calc.approximate_with_n == 10
+
+    def test_constructor_default_is_none(self):
+        """Verify default approximate_with_n is None (exact computation)."""
+        calc = SamplewiseCalculatorOpacus()
+        assert calc.approximate_with_n is None
+
+    def test_approximate_returns_tensor(self):
+        """Verify approximate computation returns a tensor."""
+        torch.manual_seed(42)
+        model = MLP(output_dim=5)
+        inputs = torch.randn(8, 10)
+
+        result = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+            model, inputs, reduce=True, approximate_with_n=3
+        )
+        assert isinstance(result, torch.Tensor)
+
+    def test_approximate_reduce_false_returns_per_sample(self):
+        """Verify approximate with reduce=False returns per-sample norms."""
+        torch.manual_seed(42)
+        batch_size = 8
+        model = MLP(output_dim=5)
+        inputs = torch.randn(batch_size, 10)
+
+        result = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+            model, inputs, reduce=False, approximate_with_n=3
+        )
+        assert result.shape == (batch_size,)

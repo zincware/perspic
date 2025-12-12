@@ -174,6 +174,13 @@ def _reset_opacus_state(model: nn.Module) -> None:
             delattr(param, "_norm_sample")
 
 
+def _draw_rademacher_random_vector(
+    shape: tuple[int, ...], device: torch.device, dtype: torch.dtype = torch.float32
+) -> torch.Tensor:
+    """Draw a random vector from the Rademacher distribution (entries are +1 or -1)."""
+    return torch.randint(0, 2, shape, device=device, dtype=dtype) * 2 - 1
+
+
 class SamplewiseCalculatorOpacus(SamplewiseCalculator):
     """Calculate per-sample gradient norms using Opacus with ghost clipping.
 
@@ -183,14 +190,19 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
     Args:
         strict: If True, Opacus will validate that all layers are supported
             for per-sample gradient computation. Defaults to False.
+        approximate_with_n: If not None, use Hutchinson's trace estimator with n
+            random projections instead of iterating over all output dimensions.
+            This provides a faster but approximate computation. Defaults to None
+            (exact computation).
 
     Note:
         For models with BatchNorm, wrap calls with `BatchStatSnapshot` context
         manager to freeze running statistics, similar to the functorch calculator.
     """
 
-    def __init__(self, strict: bool = False):
+    def __init__(self, strict: bool = False, approximate_with_n: int | None = None):
         self.strict = strict
+        self.approximate_with_n = approximate_with_n
 
     def compute(
         self,
@@ -216,7 +228,10 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         """
         batch_grad_norms_network = (
             SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
-                model, inputs, strict=self.strict
+                model,
+                inputs,
+                strict=self.strict,
+                approximate_with_n=self.approximate_with_n,
             )
         )
         batch_grad_norms_loss = (
@@ -243,6 +258,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         inputs: torch.Tensor,
         reduce: bool = True,
         strict: bool = False,
+        approximate_with_n: int | None = None,
     ) -> torch.Tensor:
         """Compute per-sample gradient norms for network parameters (∇_θ f).
 
@@ -255,6 +271,9 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             inputs: Input tensor batch of shape (batch_size, ...).
             reduce: If True, sum over batch. If False, return per-sample norms.
             strict: If True, Opacus validates all layers are supported.
+            approximate_with_n: If not None, the sample-wise gradients will not be
+                compute for each output dimension. Instead, we will apply n
+                low-dimensional projections to estimate the sum of output dimensions.
 
         Returns:
             If reduce=True: Scalar (sum of squared gradient norms).
@@ -278,15 +297,35 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 model, strict=strict, loss_reduction="sum"
             )
 
-            for dim in range(output_dim):
-                # Reset Opacus state for fresh forward/backward pass
-                _reset_opacus_state(model)
+            if approximate_with_n is not None:
+                # Implementation of Hutchinson's Trace estimator
+                # Each iteration requires a fresh forward pass because Opacus
+                # consumes activations during backward.
+                vectors = _draw_rademacher_random_vector(
+                    shape=(approximate_with_n, output_dim), device=inputs.device
+                )
 
-                gs_model.zero_grad()
-                out = gs_model(inputs)[:, dim]
-                out.sum().backward()
+                for v in vectors:
+                    # Reset Opacus state for fresh forward/backward pass
+                    _reset_opacus_state(model)
 
-                total_sq_norms += gs_model.get_norm_sample() ** 2
+                    gs_model.zero_grad()
+                    out = gs_model(inputs)
+                    projected = (out * v).sum()
+                    projected.backward()
+
+                    total_sq_norms += gs_model.get_norm_sample() ** 2
+
+            else:
+                for dim in range(output_dim):
+                    # Reset Opacus state for fresh forward/backward pass
+                    _reset_opacus_state(model)
+
+                    gs_model.zero_grad()
+                    out = gs_model(inputs)[:, dim]
+                    out.sum().backward()
+
+                    total_sq_norms += gs_model.get_norm_sample() ** 2
 
             gs_model.remove_hooks()
 

@@ -18,6 +18,7 @@ def analyzer(
     disable_analyzer: bool = False,
     log_metrics: bool = True,
     opacus_strict: bool = False,
+    opacus_approximate_with_n: Optional[int] = None,
     analyze_every: Optional[int] = None,
     analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
     cross_response: bool = False,
@@ -40,6 +41,10 @@ def analyzer(
         opacus_strict: If True and using 'opacus' engine, Opacus will validate
             that all layers are supported for per-sample gradient computation.
             Defaults to False.
+        opacus_approximate_with_n: If not None and using 'opacus' engine, use
+            Hutchinson's trace estimator with n random projections instead of
+            iterating over all output dimensions. This provides faster but
+            approximate computation. Defaults to None (exact computation).
         analyze_every: If provided, run analysis every N steps (0, N, 2N, ...).
             If None and no analysis_schedule, runs every step.
         analysis_schedule: A LogarithmicWindowSchedule that defines which steps
@@ -116,6 +121,7 @@ def analyzer(
             disable_analyzer=disable_analyzer,
             log_metrics=log_metrics,
             opacus_strict=opacus_strict,
+            opacus_approximate_with_n=opacus_approximate_with_n,
             analyze_every=analyze_every,
             analysis_schedule=analysis_schedule,
             cross_response=cross_response,
@@ -135,13 +141,24 @@ def analyzer(
                     "Either set sample_wise_engine='opacus' or remove opacus_strict."
                 )
 
+            if (
+                sample_wise_engine == "functorch"
+                and opacus_approximate_with_n is not None
+            ):
+                raise ValueError(
+                    "opacus_approximate_with_n is only valid when sample_wise_engine='opacus'. "
+                    "Either set sample_wise_engine='opacus' or remove opacus_approximate_with_n."
+                )
+
             if analyze_every is not None and analyze_every < 1:
                 raise ValueError("analyze_every must be a positive integer")
 
             if sample_wise_engine == "functorch":
                 self.sample_calc = SamplewiseCalculatorFunctorch()
             elif sample_wise_engine == "opacus":
-                self.sample_calc = SamplewiseCalculatorOpacus(strict=opacus_strict)
+                self.sample_calc = SamplewiseCalculatorOpacus(
+                    strict=opacus_strict, approximate_with_n=opacus_approximate_with_n
+                )
 
             # Initialize the linearizer
             self.linearizer = Linearizer()
@@ -407,6 +424,7 @@ def analyzer(
         disable_analyzer=disable_analyzer,
         log_metrics=log_metrics,
         opacus_strict=opacus_strict,
+        opacus_approximate_with_n=opacus_approximate_with_n,
         analyze_every=analyze_every,
         analysis_schedule=analysis_schedule,
         cross_response=cross_response,
