@@ -3,7 +3,6 @@ from typing import Optional
 
 import pytorch_lightning as pl
 
-
 from perspic.calculator.coupling import CouplingCalculator
 from perspic.calculator.linearizer import Linearizer
 from perspic.calculator.samplewise_functorch import SamplewiseCalculatorFunctorch
@@ -279,7 +278,7 @@ def analyzer(
                 )
                 # Compute samplewise metrics for the cross batch if available
                 if x2 is not None and y2 is not None:
-                    fake_response = self.sample_calc.compute(
+                    probe_results_cross_preliminary = self.sample_calc.compute(
                         self.model,
                         self.criterion,
                         x2,
@@ -287,7 +286,7 @@ def analyzer(
                     )
                     samples_results["cross"] = self.sample_calc.compute_cross_metrics(
                         sample_wise_metrics_self=samples_results["self"],
-                        sample_wise_metrics_cross=fake_response,
+                        sample_wise_metrics_cross=probe_results_cross_preliminary,
                     )
 
                 # Linearizer compute

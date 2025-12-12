@@ -189,7 +189,7 @@ class TestNormalizationScalingFunctorch:
         ), f"Unnormalized network norms should scale linearly: expected {expected_network}, got {results_repeated['batch_grad_norms_network']}"
 
         # Loss gradient norms should scale inversely (divide by batch_size ratio)
-        # because CrossEntropyLoss(reduction="sum") sums over batch, and the
+        # because CrossEntropyLoss(reduction="mean") averages over batch, and the
         # Jacobian w.r.t. output has 1/batch_size factor from the loss
         expected_loss = results_base["batch_grad_norms_loss"] / multiplier
         assert torch.allclose(
