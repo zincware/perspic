@@ -2,7 +2,7 @@ import warnings
 from typing import Optional
 
 import pytorch_lightning as pl
-import torch
+
 
 from perspic.calculator.coupling import CouplingCalculator
 from perspic.calculator.linearizer import Linearizer
@@ -77,7 +77,7 @@ def analyzer(
         # Analyze with cross-batch response
         # Note: Requires a CombinedLoader or similar that yields a dict with
         # 'train' and 'measure' keys
-        from pytorch_lightning.trainer.supporters import CombinedLoader
+        from pytorch_lightning.utilities.combined_loader import CombinedLoader
         loaders = {"train": train_loader, "measure": measure_loader}
         combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
         model = analyzer(MyModule, cross_response=True, model=backbone, lr=0.01)
@@ -199,12 +199,12 @@ def analyzer(
                 if (
                     not isinstance(batch, dict)
                     or "train" not in batch
-                    and "measure" not in batch
+                    or "measure" not in batch
                 ):
                     raise ValueError(
                         "When cross_response is True, the training batch must be a "
-                        "dict with 'train' and 'measure' keys."
-                        "This can be achieved by using a CombinedLoader "
+                        "dict with 'train' and 'measure' keys. "
+                        "This can be achieved by using a CombinedLoader with mode='max_size_cycle'."
                     )
                 batch_measure = batch["measure"]
                 batch = batch["train"]

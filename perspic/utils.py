@@ -240,7 +240,7 @@ class MultiEpochsDataLoader(data.DataLoader):
     - The internal iterator is created in `__init__` and reused. Samplers that rely
       on per-epoch reseeding (e.g., `DistributedSampler`) will NOT change their
       ordering across epochs unless you explicitly call `set_epoch` on the underlying
-      sampler and recreate the iterator (see `reset_iterator`/`set_epoch` helpers).
+      sampler and recreate the iterator manually.
     - This implementation relies on manipulating the private attribute
       `_DataLoader__initialized` to control iterator creation. This is an
       implementation detail and may break across PyTorch versions.
