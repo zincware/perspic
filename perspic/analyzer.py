@@ -304,7 +304,7 @@ def analyzer(
                 loss_self, _, delta_loss_self = probe_results["self"]
 
                 # Compute coupling value (using self response)
-                coupling_value = self.coupling_calc.calculate(
+                chi_coup = self.coupling_calc.calculate(
                     delta_loss=delta_loss_self,
                     chi_loss=samples_results["self"]["batch_grad_norms_loss"],
                     chi_net=samples_results["self"]["batch_grad_norms_network"],
@@ -312,7 +312,7 @@ def analyzer(
                 if self.cross_response and "cross" in probe_results:
                     # Optionally, compute coupling for cross response as well
                     loss_cross, _, delta_loss_cross = probe_results["cross"]
-                    coupling_value_cross = self.coupling_calc.calculate(
+                    chi_coup_cross = self.coupling_calc.calculate(
                         delta_loss=delta_loss_cross,
                         chi_loss=samples_results["cross"]["batch_grad_norms_loss"],
                         chi_net=samples_results["cross"]["batch_grad_norms_network"],
@@ -324,7 +324,7 @@ def analyzer(
                     prefix="",
                     samples_result=samples_results["self"],
                     probe_result=probe_results["self"],
-                    coupling_value=coupling_value,
+                    chi_coup=chi_coup,
                     batch_size=x.shape[0],
                 )
 
@@ -334,7 +334,7 @@ def analyzer(
                         prefix="cross_",
                         samples_result=samples_results["cross"],
                         probe_result=probe_results["cross"],
-                        coupling_value=coupling_value_cross,
+                        chi_coup=chi_coup_cross,
                         batch_size=x2.shape[0] if x2 is not None else 0,
                     )
 
@@ -355,7 +355,7 @@ def analyzer(
             prefix: str,
             samples_result: dict,
             probe_result: tuple,
-            coupling_value: Optional[float],
+            chi_coup: Optional[float],
             batch_size: int,
         ):
             """Helper method to log analysis metrics with a given prefix."""
@@ -366,8 +366,8 @@ def analyzer(
                 self.log(f"{prefix}chi_loss", samples_result["batch_grad_norms_loss"])
 
             # Log coupling if provided
-            if coupling_value is not None:
-                self.log(f"{prefix}coupling", coupling_value)
+            if chi_coup is not None:
+                self.log(f"{prefix}chi_coup", chi_coup)
 
             self.log(f"{prefix}batch_size", batch_size)
 
@@ -380,9 +380,11 @@ def analyzer(
                 loss, _, delta_loss = probe_result
                 self.log(f"{prefix}loss", loss)
 
-                # For cross response, we might want to name it differently or keep consistent
-                # The original code used 'grad_norm_squared' for self and 'cross_grad_dot_product' for cross
-                # We can standardize or keep the distinction based on prefix
+                # For cross response, we might want to name it differently or keep
+                # consistent.
+                # The original code used 'grad_norm_squared' for self and
+                # 'cross_grad_dot_product' for cross.
+                # We can standardize or keep the distinction based on prefix.
                 metric_name = (
                     "grad_norm_squared" if prefix == "" else "grad_dot_product"
                 )
