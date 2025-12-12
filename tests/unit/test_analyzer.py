@@ -301,7 +301,7 @@ class TestBeforeTrainingStepHook:
 
         assert "chi_net" in logged_metrics
         assert "chi_loss" in logged_metrics
-        assert "coupling" in logged_metrics
+        assert "chi_coup" in logged_metrics
         assert "batch_size" in logged_metrics
         assert "analysis_step" in logged_metrics
         assert "loss" in logged_metrics
@@ -354,13 +354,14 @@ class TestBeforeTrainingStepHook:
         # Check self metrics
         assert "chi_net" in logged_metrics
         assert "chi_loss" in logged_metrics
-        assert "coupling" in logged_metrics
+        assert "chi_coup" in logged_metrics
         assert "loss" in logged_metrics
         assert "grad_norm_squared" in logged_metrics
 
         # Check cross metrics
         assert "cross_chi_net" in logged_metrics
         assert "cross_chi_loss" in logged_metrics
+        assert "cross_chi_coup" in logged_metrics
         assert "cross_loss" in logged_metrics
         assert "cross_grad_dot_product" in logged_metrics
         assert "cross_batch_size" in logged_metrics
@@ -601,7 +602,7 @@ class TestMetricLogging:
         assert "chi_loss" in logged_names
         assert "loss" in logged_names
         assert "batch_size" in logged_names
-        assert "coupling" in logged_names
+        assert "chi_coup" in logged_names
         assert "analysis_step" in logged_names
         assert "grad_norm_squared" in logged_names
 
