@@ -220,7 +220,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 and returns a scalar loss tensor.
             inputs: Input tensor batch of shape (batch_size, ...).
             targets: Target tensor batch of shape (batch_size, ...).
-            normalize: If True, sample-wise metrics are correctd to scale properly with
+            normalize: If True, sample-wise metrics are corrected to scale properly with
                 batch-size.
 
         Returns:

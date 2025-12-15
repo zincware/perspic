@@ -1115,13 +1115,9 @@ class TestAnalyzerWithCrossResponseLoader:
 
         train_x = torch.randn(16, 10)
         train_y = torch.randint(0, 2, (16,))
-        train_dataset = TensorDataset(train_x, train_y)
-        train_loader = DataLoader(train_dataset, batch_size=8)
 
         cross_x = torch.randn(8, 10)
         cross_y = torch.randint(0, 2, (8,))
-        cross_dataset = TensorDataset(cross_x, cross_y)
-        cross_loader = DataLoader(cross_dataset, batch_size=8)
 
         model = analyzer(
             simple_lightning_module,
@@ -1147,6 +1143,7 @@ class TestAnalyzerWithCrossResponseLoader:
         assert "cross_grad_dot_product" in logged_metrics
         assert "cross_chi_net" in logged_metrics
         assert "cross_chi_loss" in logged_metrics
+        assert "cross_chi_coup" in logged_metrics
 
     def test_no_cross_metrics_without_loader(self, simple_lightning_module):
         """Test that cross-response metrics are NOT logged without loader."""
@@ -1222,8 +1219,6 @@ class TestAnalyzerWithCrossResponseLoader:
 
         cross_x = torch.randn(8, 10)
         cross_y = torch.randint(0, 2, (8,))
-        cross_dataset = TensorDataset(cross_x, cross_y)
-        cross_loader = DataLoader(cross_dataset, batch_size=8)
 
         model = analyzer(
             simple_lightning_module,

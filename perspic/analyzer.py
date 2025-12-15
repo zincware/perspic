@@ -79,14 +79,6 @@ def analyzer(
         schedule = logarithmic_windows(max_steps=10000, points_per_decade=5)
         model = analyzer(MyModule, analysis_schedule=schedule, model=backbone, lr=0.01)
 
-        # Analyze with cross-batch response
-        # Note: Requires a CombinedLoader or similar that yields a dict with
-        # 'train' and 'measure' keys
-        from pytorch_lightning.trainer.supporters import CombinedLoader
-        loaders = {"train": train_loader, "measure": measure_loader}
-        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
-        model = analyzer(MyModule, cross_response=True, model=backbone, lr=0.01)
-
     Note:
         The lightning_module.__call__ method must contain the ENTIRE forward pass logic.
         If there is any preprocessing (like flattening) it must be included in
@@ -216,12 +208,12 @@ def analyzer(
                 if (
                     not isinstance(batch, dict)
                     or "train" not in batch
-                    and "measure" not in batch
+                    or "measure" not in batch
                 ):
                     raise ValueError(
                         "When cross_response is True, the training batch must be a "
-                        "dict with 'train' and 'measure' keys."
-                        "This can be achieved by using a CombinedLoader "
+                        "dict with 'train' and 'measure' keys. "
+                        "This can be achieved by using a CombinedLoader with mode='max_size_cycle'."
                     )
                 batch_measure = batch["measure"]
                 batch = batch["train"]
@@ -296,7 +288,7 @@ def analyzer(
                 )
                 # Compute samplewise metrics for the cross batch if available
                 if x2 is not None and y2 is not None:
-                    fake_response = self.sample_calc.compute(
+                    probe_results_cross_preliminary = self.sample_calc.compute(
                         self.model,
                         self.criterion,
                         x2,
@@ -304,7 +296,7 @@ def analyzer(
                     )
                     samples_results["cross"] = self.sample_calc.compute_cross_metrics(
                         sample_wise_metrics_self=samples_results["self"],
-                        sample_wise_metrics_cross=fake_response,
+                        sample_wise_metrics_cross=probe_results_cross_preliminary,
                     )
 
                 # Linearizer compute
