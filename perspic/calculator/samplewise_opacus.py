@@ -198,6 +198,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
         targets: torch.Tensor,
+        normalize: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """Compute per-sample gradient norms for network and loss.
 
@@ -207,24 +208,34 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 and returns a scalar loss tensor.
             inputs: Input tensor batch of shape (batch_size, ...).
             targets: Target tensor batch of shape (batch_size, ...).
+            normalize: If True, sample-wise metrics are corrected to scale properly with
+                batch-size.
 
         Returns:
             Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
         """
-        out = {
-            "batch_grad_norms_network": (
-                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
-                    model, inputs, strict=self.strict
-                )
-            ),
-            "batch_grad_norms_loss": (
-                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_loss(
-                    model, loss_fn, inputs, targets
-                )
-            ),
-        }
+        batch_grad_norms_network = (
+            SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                model, inputs, strict=self.strict
+            )
+        )
+        batch_grad_norms_loss = (
+            SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_loss(
+                model, loss_fn, inputs, targets
+            )
+        )
+
+        # Optionally normalize the results
+        if normalize:
+            batch_size = inputs.shape[0]
+            batch_grad_norms_network /= batch_size
+            batch_grad_norms_loss *= batch_size
+
         model.zero_grad()
-        return out
+        return {
+            "batch_grad_norms_network": batch_grad_norms_network,
+            "batch_grad_norms_loss": batch_grad_norms_loss,
+        }
 
     @staticmethod
     def _compute_per_sample_gradient_norm_network(

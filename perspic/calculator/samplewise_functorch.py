@@ -25,6 +25,7 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
         loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         inputs: torch.Tensor,
         targets: torch.Tensor,
+        normalize: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """Compute per-sample gradient norms for network and loss.
 
@@ -34,6 +35,8 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
                 and returns a scalar loss tensor.
             inputs: Input tensor batch of shape (batch_size, ...).
             targets: Target tensor batch of shape (batch_size, ...).
+            normalize: If True, sample-wise metrics are corrected to scale properly with
+                batch-size.
 
         Returns:
             Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
@@ -49,7 +52,12 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
             )
         )
 
-        # Restore the track_running_states to True for BatchNorm layers
+        # Optionally normalize the results
+        if normalize:
+            batch_size = inputs.shape[0]
+            batch_grad_norms_network /= batch_size
+            batch_grad_norms_loss *= batch_size
+
         return {
             "batch_grad_norms_network": batch_grad_norms_network,
             "batch_grad_norms_loss": batch_grad_norms_loss,

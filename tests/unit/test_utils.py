@@ -3,9 +3,10 @@
 import pytest
 import torch
 import torch.nn as nn
+from torch.utils.data import TensorDataset
 
 from examples.models import BatchNormMLP, ResidualMLP, WideResNet
-from perspic.utils import BatchStatSnapshot
+from perspic.utils import BatchStatSnapshot, MultiEpochsDataLoader, RepeatSampler
 
 
 # Test fixtures
@@ -457,3 +458,74 @@ class TestBatchStatSnapshot:
         assert torch.allclose(
             bn_layer.running_var, initial_var
         ), "Running var not restored"
+
+
+class TestMultiEpochsDataLoader:
+    """Test MultiEpochsDataLoader and RepeatSampler."""
+
+    @pytest.fixture
+    def simple_dataset(self):
+        """Create a simple dataset."""
+        return TensorDataset(torch.arange(20))
+
+    def test_repeat_sampler_infinite(self):
+        """Test that RepeatSampler yields indefinitely."""
+        data_source = [1, 2, 3]
+        sampler = RepeatSampler(data_source)
+        iterator = iter(sampler)
+
+        # Check that we can get more items than the original source length
+        items = [next(iterator) for _ in range(10)]
+        assert len(items) == 10
+        assert items == [1, 2, 3, 1, 2, 3, 1, 2, 3, 1]
+
+    def test_loader_yields_correct_batches(self, simple_dataset):
+        """Test that loader yields correct number of batches per epoch."""
+        batch_size = 4
+        loader = MultiEpochsDataLoader(simple_dataset, batch_size=batch_size)
+
+        assert len(loader) == 5  # 20 items / 4 batch_size = 5 batches
+
+        batches = list(loader)
+        assert len(batches) == 5
+
+        # Check content of first batch
+        assert torch.equal(batches[0][0], torch.arange(4))
+
+    def test_multiple_epochs(self, simple_dataset):
+        """Test iterating over multiple epochs."""
+        batch_size = 5
+        loader = MultiEpochsDataLoader(simple_dataset, batch_size=batch_size)
+
+        num_epochs = 3
+        total_batches = 0
+
+        for epoch in range(num_epochs):
+            batches = list(loader)
+            assert len(batches) == 4  # 20 / 5 = 4
+            total_batches += len(batches)
+
+        assert total_batches == 12
+
+    def test_len_error_handling(self):
+        """Test error when underlying sampler has no length."""
+
+        # Create a sampler without __len__
+        class NoLenSampler:
+            def __iter__(self):
+                return iter([1, 2, 3])
+
+        # We need to mock the batch_sampler structure slightly because
+        # DataLoader expects a batch_sampler to be iterable
+        loader = MultiEpochsDataLoader(TensorDataset(torch.randn(10)), batch_size=2)
+        # Force a bad sampler
+        loader.batch_sampler.sampler = NoLenSampler()
+
+        with pytest.raises(TypeError, match="does not define __len__"):
+            len(loader)
+
+    def test_init_error_no_batch_sampler(self, simple_dataset):
+        """Test error when initialized without batch_sampler (e.g. batch_size=None)."""
+        # DataLoader with batch_size=None disables automatic batching (no batch_sampler)
+        with pytest.raises(ValueError, match="requires a batch_sampler"):
+            MultiEpochsDataLoader(simple_dataset, batch_size=None)

@@ -10,6 +10,7 @@ from perspic.logger import (
     LogarithmicWindowSchedule,
     logarithmic_windows,
 )
+from perspic.utils import MultiEpochsDataLoader
 
 __all__ = [
     analyzer.__name__,
@@ -18,4 +19,5 @@ __all__ = [
     SamplewiseCalculatorOpacus.__name__,
     LogarithmicWindowSchedule.__name__,
     logarithmic_windows.__name__,
+    MultiEpochsDataLoader.__name__,
 ]

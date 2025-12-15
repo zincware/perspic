@@ -221,7 +221,7 @@ class TestBeforeTrainingStepHook:
     """Test _before_training_step hook method."""
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_calls_sample_calc_compute(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -231,7 +231,8 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module)
@@ -247,17 +248,18 @@ class TestBeforeTrainingStepHook:
         assert torch.equal(call_args[0][3], y)  # y argument
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_calls_linearizer_probe(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
-        """Test that linearizer.probe_train_step() is called with correct arguments."""
+        """Test that linearizer.compute() is called with correct arguments."""
         mock_compute.return_value = {
             "batch_grad_norms_network": torch.tensor(1.0),
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module)
@@ -269,18 +271,11 @@ class TestBeforeTrainingStepHook:
         call_kwargs = mock_probe.call_args[1]
         assert call_kwargs["model"] == model.model
         assert call_kwargs["criterion"] == model.criterion
-        assert torch.equal(call_kwargs["x"], x)
-        assert torch.equal(call_kwargs["y"], y)
-
-    def test_linearizer_initialized_with_correct_etas(self, simple_lightning_module):
-        """Test that linearizer is initialized with correct eta_array."""
-        custom_etas = [1e-2, 1e-4, 1e-6]
-        model = analyzer(simple_lightning_module, linearizing_lrs=custom_etas)
-
-        assert model.linearizer.eta_array == custom_etas
+        assert torch.equal(call_kwargs["x1"], x)
+        assert torch.equal(call_kwargs["y1"], y)
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_logs_metrics_when_enabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -290,7 +285,8 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_loss": torch.tensor(3.7),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
@@ -305,16 +301,73 @@ class TestBeforeTrainingStepHook:
 
         assert "chi_net" in logged_metrics
         assert "chi_loss" in logged_metrics
-        assert "coupling" in logged_metrics
+        assert "chi_coup" in logged_metrics
         assert "batch_size" in logged_metrics
         assert "analysis_step" in logged_metrics
         assert "loss" in logged_metrics
-        assert any(name.startswith("lin_loss_before_eta_") for name in logged_metrics)
-        assert any(name.startswith("lin_loss_after_eta_") for name in logged_metrics)
-        assert any(name.startswith("lin_loss_delta_eta_") for name in logged_metrics)
+        assert "grad_norm_squared" in logged_metrics
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(SamplewiseCalculatorOpacus, "compute_cross_metrics")
+    @patch.object(Linearizer, "compute")
+    def test_logs_cross_metrics(
+        self,
+        mock_probe,
+        mock_compute_cross,
+        mock_compute,
+        simple_lightning_module,
+        sample_batch,
+    ):
+        """Test that cross metrics are logged when cross_response=True."""
+        # Mock compute results for self and cross
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(2.5),
+            "batch_grad_norms_loss": torch.tensor(3.7),
+        }
+
+        mock_compute_cross.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.5),
+            "batch_grad_norms_loss": torch.tensor(2.7),
+        }
+
+        # Mock probe results
+        mock_probe.return_value = {
+            "self": (1.0, 0.0, -1.0),
+            "cross": (0.5, 0.0, -0.5),
+        }
+
+        # Initialize analyzer with cross_response=True
+        model = analyzer(simple_lightning_module, log_metrics=True, cross_response=True)
+        model.log = Mock()  # Mock the log method
+        x, y = sample_batch
+
+        # Create a dummy cross batch
+        x2, y2 = x.clone(), y.clone()
+
+        # Call _before_training_step with cross response batch
+        model._before_training_step((x, y), 0, cross_response_batch=(x2, y2))
+
+        # Verify log was called for each metric
+        assert model.log.call_count > 0
+        logged_metrics = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+
+        # Check self metrics
+        assert "chi_net" in logged_metrics
+        assert "chi_loss" in logged_metrics
+        assert "chi_coup" in logged_metrics
+        assert "loss" in logged_metrics
+        assert "grad_norm_squared" in logged_metrics
+
+        # Check cross metrics
+        assert "cross_chi_net" in logged_metrics
+        assert "cross_chi_loss" in logged_metrics
+        assert "cross_chi_coup" in logged_metrics
+        assert "cross_loss" in logged_metrics
+        assert "cross_grad_dot_product" in logged_metrics
+        assert "cross_batch_size" in logged_metrics
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "compute")
     def test_no_logging_when_disabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -325,7 +378,8 @@ class TestBeforeTrainingStepHook:
         }
 
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module, log_metrics=False)
@@ -338,7 +392,7 @@ class TestBeforeTrainingStepHook:
         model.log.assert_not_called()
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_batch_unpacking(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -348,7 +402,8 @@ class TestBeforeTrainingStepHook:
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module)
@@ -380,7 +435,7 @@ class TestTrainingStepBehavior:
     """Test training_step method behavior with disable_analyzer flag."""
 
     @patch.object(SamplewiseCalculatorFunctorch, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_before_hook_skipped_when_disabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -397,7 +452,7 @@ class TestTrainingStepBehavior:
         mock_probe.assert_not_called()
 
     @patch.object(SamplewiseCalculatorFunctorch, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_after_hook_skipped_when_disabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -414,7 +469,7 @@ class TestTrainingStepBehavior:
         model._after_training_step.assert_not_called()
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_hooks_called_when_enabled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -424,7 +479,8 @@ class TestTrainingStepBehavior:
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module, disable_analyzer=False)
@@ -520,7 +576,7 @@ class TestMetricLogging:
     """Test metric logging behavior."""
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_correct_metric_names(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -530,7 +586,8 @@ class TestMetricLogging:
             "batch_grad_norms_loss": torch.tensor(2.0),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
@@ -545,14 +602,12 @@ class TestMetricLogging:
         assert "chi_loss" in logged_names
         assert "loss" in logged_names
         assert "batch_size" in logged_names
-        assert "coupling" in logged_names
+        assert "chi_coup" in logged_names
         assert "analysis_step" in logged_names
-        assert any(name.startswith("lin_loss_before_eta_") for name in logged_names)
-        assert any(name.startswith("lin_loss_after_eta_") for name in logged_names)
-        assert any(name.startswith("lin_loss_delta_eta_") for name in logged_names)
+        assert "grad_norm_squared" in logged_names
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_correct_metric_values(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -562,7 +617,8 @@ class TestMetricLogging:
             "batch_grad_norms_loss": torch.tensor(2.5),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module, log_metrics=True)
@@ -575,8 +631,8 @@ class TestMetricLogging:
 
         assert torch.allclose(logged_values["chi_net"], torch.tensor(1.5))
         assert torch.allclose(logged_values["chi_loss"], torch.tensor(2.5))
-        assert logged_values["lin_loss_before_eta_1e-03"] == 1.0
-        assert logged_values["lin_loss_after_eta_1e-03"] == pytest.approx(1.05)
+        assert logged_values["loss"] == 1.0
+        assert logged_values["grad_norm_squared"] == 1.0  # -delta = -(-1.0) = 1.0
         assert logged_values["batch_size"] == 4
 
 
@@ -655,7 +711,7 @@ class TestAnalyzerScheduling:
         assert model._should_analyze(5) is True
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_before_hook_skipped_when_not_scheduled(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -672,7 +728,7 @@ class TestAnalyzerScheduling:
         mock_probe.assert_not_called()
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_logs_window_info_with_schedule(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -684,7 +740,8 @@ class TestAnalyzerScheduling:
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         schedule = LogarithmicWindowSchedule(
@@ -706,7 +763,7 @@ class TestAnalyzerScheduling:
         assert "window_width" in logged_names
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    @patch.object(Linearizer, "probe_train_step")
+    @patch.object(Linearizer, "compute")
     def test_no_window_info_without_schedule(
         self, mock_probe, mock_compute, simple_lightning_module, sample_batch
     ):
@@ -716,7 +773,8 @@ class TestAnalyzerScheduling:
             "batch_grad_norms_loss": torch.tensor(1.0),
         }
         mock_probe.return_value = {
-            1e-3: (1.0, 1.05),  # Returns dict[float, tuple[float, float]]
+            "self": (1.0, 0.0, -1.0),
+            "cross": None,
         }
 
         model = analyzer(simple_lightning_module, log_metrics=True)

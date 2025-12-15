@@ -407,7 +407,7 @@ class TestSamplewiseCalculatorOpacus:
         # Run Opacus computation (this would crash without the fix)
         calc = SamplewiseCalculatorOpacus()
         with BatchStatSnapshot(model, X):
-            results = calc.compute(model, loss_fn, X, y)
+            results = calc.compute(model, loss_fn, X, y, normalize=False)
 
         # Verify inplace=True is restored after computation
         for relu in relu_modules:
