@@ -55,8 +55,7 @@ class TestHutchinsonApproximationConvergence:
                     approx = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
                         model, inputs, reduce=True, approximate_with_n=n
                     )
-                    # Scale by 1/n since Hutchinson sums n projections
-                    approx_values.append(approx.item() / n)
+                    approx_values.append(approx.item())
 
                 mean_approx = sum(approx_values) / len(approx_values)
                 rel_error = abs(mean_approx - exact.item()) / exact.item()
@@ -89,7 +88,7 @@ class TestHutchinsonApproximationConvergence:
                 approx = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
                     model, inputs, reduce=True, approximate_with_n=5
                 )
-                approx_sum += approx.item() / 5  # Scale by 1/n
+                approx_sum += approx.item()
 
             mean_approx = approx_sum / n_runs
             rel_error = abs(mean_approx - exact.item()) / exact.item()
@@ -148,7 +147,7 @@ class TestHutchinsonApproximationConvergence:
                     model, inputs, reduce=True, approximate_with_n=output_dim * 10
                 )
             )
-            approx_scaled = approx.item() / (output_dim * 10)
+            approx_scaled = approx.item()
 
             rel_error = abs(approx_scaled - exact.item()) / exact.item()
             assert (

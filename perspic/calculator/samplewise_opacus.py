@@ -272,7 +272,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             reduce: If True, sum over batch. If False, return per-sample norms.
             strict: If True, Opacus validates all layers are supported.
             approximate_with_n: If not None, the sample-wise gradients will not be
-                compute for each output dimension. Instead, we will apply n
+                computed for each output dimension. Instead, we will apply n
                 low-dimensional projections to estimate the sum of output dimensions.
 
         Returns:
@@ -298,7 +298,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             )
 
             if approximate_with_n is not None:
-                # Implementation of Hutchinson's Trace estimator
+                # Implementation of Hutchinson's trace estimator
                 # Each iteration requires a fresh forward pass because Opacus
                 # consumes activations during backward.
                 vectors = _draw_rademacher_random_vector(
@@ -315,6 +315,8 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                     projected.backward()
 
                     total_sq_norms += gs_model.get_norm_sample() ** 2
+
+                total_sq_norms /= approximate_with_n  # Average over projections
 
             else:
                 for dim in range(output_dim):

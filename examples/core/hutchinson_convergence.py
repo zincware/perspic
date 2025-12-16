@@ -69,8 +69,8 @@ def main():
                     model, inputs, reduce=False, approximate_with_n=n
                 )
             )
-            # Hutchinson gives unbiased estimate when averaged over n projections
-            approx_total = approx_norms.sum().item() / n
+            # Hutchinson gives an estimate of the total norm directly
+            approx_total = approx_norms.sum().item()
             results.append(approx_total)
 
         mean_val = sum(results) / len(results)
@@ -118,7 +118,7 @@ def main():
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("examples/hutchinson_convergence.png", dpi=150)
+    plt.savefig("./hutchinson_convergence.png", dpi=150)
     plt.show()
 
     print()
