@@ -339,7 +339,7 @@ class AdvancedClassificationModule(pl.LightningModule):
 
 if __name__ == "__main__":
     # Example usage
-    from examples.models import DeepMLP, SimpleMLP
+    from perspic.models import DeepMLP, SimpleMLP
 
     print("=" * 60)
     print("Lightning Module Examples")

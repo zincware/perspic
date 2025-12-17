@@ -8,7 +8,7 @@ for use in examples and tests. All models are designed for CIFAR-10 (32x32x3 ima
 import torch
 import torch.nn as nn
 
-from examples.models.utils import print_model_info
+from perspic.models.utils import print_model_info
 
 
 class SimpleMLP(nn.Module):

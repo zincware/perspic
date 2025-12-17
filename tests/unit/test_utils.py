@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset
 
-from examples.models import BatchNormMLP, ResidualMLP, WideResNet
+from perspic.models import BatchNormMLP, ResidualMLP, WideResNet
 from perspic.utils import BatchStatSnapshot, MultiEpochsDataLoader, RepeatSampler
 
 
