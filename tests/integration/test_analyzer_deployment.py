@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from pytorch_lightning.utilities.combined_loader import CombinedLoader
+from torch.optim.lr_scheduler import OneCycleLR, StepLR
 from torch.utils.data import DataLoader, TensorDataset
 
 import perspic
@@ -1244,3 +1245,174 @@ class TestAnalyzerWithCrossResponseLoader:
         # Cross grad dot product can be positive or negative
         assert isinstance(logged_metrics["cross_grad_dot_product"], float)
         assert not torch.isnan(torch.tensor(logged_metrics["cross_grad_dot_product"]))
+
+
+class TestSchedulerIntegration:
+    """Integration tests for learning rate schedulers."""
+
+    def test_analyzer_step_scheduler(self):
+        """Test that step-based scheduler is stepped correctly."""
+
+        class SchedulerModule(pl.LightningModule):
+            def __init__(self, scheduler_type="step"):
+                super().__init__()
+                self.model = nn.Linear(10, 2)
+                self.criterion = F.cross_entropy
+                self.scheduler_type = scheduler_type
+                self.lr = 0.1
+
+            def forward(self, x):
+                return self.model(x)
+
+            def training_step(self, batch, batch_idx):
+                x, y = batch
+                logits = self(x)
+                loss = self.criterion(logits, y)
+                return loss
+
+            def configure_optimizers(self):
+                optimizer = torch.optim.SGD(self.parameters(), lr=self.lr)
+                if self.scheduler_type == "step":
+                    scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+                    return {
+                        "optimizer": optimizer,
+                        "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
+                    }
+                elif self.scheduler_type == "onecycle":
+                    scheduler = OneCycleLR(
+                        optimizer,
+                        max_lr=self.lr,
+                        total_steps=10,
+                    )
+                    return {
+                        "optimizer": optimizer,
+                        "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+                    }
+                return optimizer
+
+        # Wrap with analyzer
+        model = analyzer(SchedulerModule, scheduler_type="onecycle")
+
+        trainer = pl.Trainer(
+            max_epochs=1,
+            limit_train_batches=5,
+            enable_checkpointing=False,
+            logger=False,
+        )
+
+        # Create dummy data
+        torch.manual_seed(42)
+        x = torch.randn(32, 10)
+        y = torch.randint(0, 2, (32,))
+        train_loader = DataLoader(TensorDataset(x, y), batch_size=4)
+
+        # Initial LR
+        # We can't easily check LR before training starts because scheduler is initialized in configure_optimizers
+        # which is called by trainer.
+
+        # We can use a callback to check LR
+        class LRCheckCallback(pl.Callback):
+            def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+                if batch_idx == 0:
+                    self.initial_lr = trainer.optimizers[0].param_groups[0]["lr"]
+
+            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+                current_lr = trainer.optimizers[0].param_groups[0]["lr"]
+                # OneCycleLR starts low, increases, then decreases.
+                # But we just want to see it change.
+                if batch_idx > 0:
+                    assert (
+                        current_lr != self.initial_lr
+                    ), f"LR did not change at batch {batch_idx}"
+
+        lr_callback = LRCheckCallback()
+        trainer.callbacks.append(lr_callback)
+
+        trainer.fit(model, train_loader)
+
+    def test_analyzer_epoch_scheduler(self):
+        """Test that epoch-based scheduler is stepped correctly."""
+
+        class SchedulerModule(pl.LightningModule):
+            def __init__(self, scheduler_type="step"):
+                super().__init__()
+                self.model = nn.Linear(10, 2)
+                self.criterion = F.cross_entropy
+                self.scheduler_type = scheduler_type
+                self.lr = 0.1
+
+            def forward(self, x):
+                return self.model(x)
+
+            def training_step(self, batch, batch_idx):
+                x, y = batch
+                logits = self(x)
+                loss = self.criterion(logits, y)
+                return loss
+
+            def configure_optimizers(self):
+                optimizer = torch.optim.SGD(self.parameters(), lr=self.lr)
+                if self.scheduler_type == "step":
+                    scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+                    return {
+                        "optimizer": optimizer,
+                        "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
+                    }
+                elif self.scheduler_type == "onecycle":
+                    scheduler = OneCycleLR(
+                        optimizer,
+                        max_lr=self.lr,
+                        total_steps=10,
+                    )
+                    return {
+                        "optimizer": optimizer,
+                        "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+                    }
+                return optimizer
+
+        # StepLR with step_size=1 means it decays every epoch
+        model = analyzer(SchedulerModule, scheduler_type="step")
+
+        trainer = pl.Trainer(
+            max_epochs=2,
+            limit_train_batches=2,
+            enable_checkpointing=False,
+            logger=False,
+        )
+
+        torch.manual_seed(42)
+        x = torch.randn(32, 10)
+        y = torch.randint(0, 2, (32,))
+        train_loader = DataLoader(TensorDataset(x, y), batch_size=4)
+
+        class LREpochCheckCallback(pl.Callback):
+            def __init__(self):
+                self.lrs = []
+
+            def on_train_epoch_start(self, trainer, pl_module):
+                self.lrs.append(trainer.optimizers[0].param_groups[0]["lr"])
+
+        lr_callback = LREpochCheckCallback()
+        trainer.callbacks.append(lr_callback)
+
+        trainer.fit(model, train_loader)
+
+        # Verify LR changes across epochs
+        # Initial LR is 0.1
+        # Epoch 0 start: 0.1
+        # Epoch 0 end: scheduler step -> 0.01
+        # Epoch 1 start: 0.01
+        # Epoch 1 end: scheduler step -> 0.001
+
+        assert len(lr_callback.lrs) == 2
+        assert lr_callback.lrs[0] == pytest.approx(
+            0.1
+        ), f"Epoch 0 LR should be 0.1, got {lr_callback.lrs[0]}"
+        assert lr_callback.lrs[1] == pytest.approx(
+            0.01
+        ), f"Epoch 1 LR should be 0.01, got {lr_callback.lrs[1]}"
+
+        final_lr = trainer.optimizers[0].param_groups[0]["lr"]
+        assert final_lr == pytest.approx(
+            0.001
+        ), f"Final LR should be 0.001 after 2 epochs, got {final_lr}"
