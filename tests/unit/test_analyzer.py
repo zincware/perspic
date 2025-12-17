@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import OneCycleLR, StepLR
 
 from perspic.analyzer import analyzer
 from perspic.calculator.linearizer import Linearizer
@@ -787,3 +788,122 @@ class TestAnalyzerScheduling:
         assert "window_id" not in logged_names
         assert "window_center" not in logged_names
         assert "window_width" not in logged_names
+
+
+class SchedulerModule(pl.LightningModule):
+    def __init__(self, scheduler_type="step"):
+        super().__init__()
+        self.model = nn.Linear(10, 2)
+        self.criterion = F.cross_entropy
+        self.scheduler_type = scheduler_type
+        self.lr = 0.1
+
+    def forward(self, x):
+        return self.model(x)
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        logits = self(x)
+        loss = self.criterion(logits, y)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.SGD(self.parameters(), lr=self.lr)
+        if self.scheduler_type == "step":
+            scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
+            }
+        elif self.scheduler_type == "onecycle":
+            scheduler = OneCycleLR(
+                optimizer,
+                max_lr=self.lr,
+                total_steps=10,
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+            }
+        return optimizer
+
+
+def test_analyzer_step_scheduler():
+    """Test that step-based scheduler is stepped correctly."""
+    # Wrap with analyzer
+    model = analyzer(SchedulerModule, scheduler_type="onecycle")
+
+    trainer = pl.Trainer(
+        max_epochs=1, limit_train_batches=5, enable_checkpointing=False, logger=False
+    )
+
+    # Create dummy data
+    x = torch.randn(32, 10)
+    y = torch.randint(0, 2, (32,))
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x, y), batch_size=4
+    )
+
+    # Initial LR
+    # We can't easily check LR before training starts because scheduler is initialized in configure_optimizers
+    # which is called by trainer.
+
+    # We can use a callback to check LR
+    class LRCheckCallback(pl.Callback):
+        def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+            if batch_idx == 0:
+                self.initial_lr = trainer.optimizers[0].param_groups[0]["lr"]
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            current_lr = trainer.optimizers[0].param_groups[0]["lr"]
+            # OneCycleLR starts low, increases, then decreases.
+            # But we just want to see it change.
+            if batch_idx > 0:
+                assert (
+                    current_lr != self.initial_lr
+                ), f"LR did not change at batch {batch_idx}"
+
+    lr_callback = LRCheckCallback()
+    trainer.callbacks.append(lr_callback)
+
+    trainer.fit(model, train_loader)
+
+
+def test_analyzer_epoch_scheduler():
+    """Test that epoch-based scheduler is stepped correctly."""
+    # StepLR with step_size=1 means it decays every epoch
+    model = analyzer(SchedulerModule, scheduler_type="step")
+
+    trainer = pl.Trainer(
+        max_epochs=2, limit_train_batches=2, enable_checkpointing=False, logger=False
+    )
+
+    x = torch.randn(32, 10)
+    y = torch.randint(0, 2, (32,))
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x, y), batch_size=4
+    )
+
+    class LREpochCheckCallback(pl.Callback):
+        def on_train_epoch_start(self, trainer, pl_module):
+            self.current_epoch_lr = trainer.optimizers[0].param_groups[0]["lr"]
+
+        def on_train_epoch_end(self, trainer, pl_module):
+            pass
+
+    lr_callback = LREpochCheckCallback()
+    trainer.callbacks.append(lr_callback)
+
+    trainer.fit(model, train_loader)
+
+    # After 2 epochs, LR should have decayed twice (start of epoch 0 -> end of epoch 0 (decay) -> start of epoch 1 -> end of epoch 1 (decay))
+    # Wait, StepLR steps at the end of epoch.
+    # Initial LR is 0.1.
+    # After epoch 0, it becomes 0.01.
+    # After epoch 1, it becomes 0.001.
+
+    final_lr = trainer.optimizers[0].param_groups[0]["lr"]
+    assert final_lr < 0.1, f"LR should have decayed, got {final_lr}"
+    assert final_lr == pytest.approx(
+        0.001
+    ), f"LR should be 0.001 after 2 epochs, got {final_lr}"

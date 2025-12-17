@@ -234,11 +234,31 @@ def analyzer(
                 # Optimizer step
                 opt.step()
 
+                # Step schedulers with interval='step'
+                if self._trainer is not None and self.trainer.lr_scheduler_configs:
+                    for config in self.trainer.lr_scheduler_configs:
+                        if config.interval == "step":
+                            config.scheduler.step()
+
             # AFTER logic
             if not self.disable_analyzer:
                 self._after_training_step(batch, batch_idx, output)
 
             return output
+
+        def on_train_epoch_end(self):
+            """Hook executed at the end of the training epoch."""
+            # Step schedulers with interval='epoch'
+            if (
+                not self.delegate_optimization
+                and self._trainer is not None
+                and self.trainer.lr_scheduler_configs
+            ):
+                for config in self.trainer.lr_scheduler_configs:
+                    if config.interval == "epoch":
+                        config.scheduler.step()
+
+            super().on_train_epoch_end()
 
         def _should_analyze(self, step: int) -> bool:
             """Determine if analysis should run at the given step."""
