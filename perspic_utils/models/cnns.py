@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from examples.models.utils import print_model_info
+from perspic_utils.models.utils import print_model_info
 
 
 class BasicBlock(nn.Module):
