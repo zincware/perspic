@@ -204,6 +204,9 @@ def analyzer(
             """
             batch_measure = None
             if self.cross_response:
+                # Unpack batch if provided as tuple (batch, batch_idx, dataloader_idx)
+                if type(batch) is tuple and len(batch) == 3:
+                    batch, _batch_idx, dataloader_idx = batch
                 # Check if cross-response batch is provided
                 if (
                     not isinstance(batch, dict)
