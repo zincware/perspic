@@ -19,6 +19,7 @@ from perspic_utils.models import (
     SimpleMLP,
     WideResNet,
 )
+from perspic_utils.models import print_model_info
 
 __all__ = [
     # MLP models
@@ -33,4 +34,6 @@ __all__ = [
     # Lightning modules
     "ClassificationModule",
     "AdvancedClassificationModule",
+    # Utility functions
+    "print_model_info",
 ]

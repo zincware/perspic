@@ -25,6 +25,9 @@ from .mlps import (
     SimpleMLP,
 )
 
+# Import utilities
+from .utils import print_model_info
+
 __all__ = [
     # MLP models
     "SimpleMLP",
@@ -38,4 +41,6 @@ __all__ = [
     # Lightning modules
     "ClassificationModule",
     "AdvancedClassificationModule",
+    # Utilities
+    "print_model_info",
 ]
