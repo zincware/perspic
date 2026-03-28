@@ -285,10 +285,9 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         inplace_states = _disable_inplace_ops(model)
 
         try:
-            # Determine output dimension
+            # Determine output shape (beyond batch dim)
             with torch.no_grad():
                 sample_out = model(inputs[:1])
-            output_dim = sample_out.shape[-1] if sample_out.dim() > 1 else 1
 
             total_sq_norms = torch.zeros(inputs.shape[0], device=inputs.device)
 
@@ -302,7 +301,8 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 # Each iteration requires a fresh forward pass because Opacus
                 # consumes activations during backward.
                 vectors = _draw_rademacher_random_vector(
-                    shape=(approximate_with_n, output_dim), device=inputs.device
+                    shape=(approximate_with_n, *sample_out.shape[1:]),  # (n, S, K)
+                    device=inputs.device,
                 )
 
                 for v in vectors:
@@ -319,13 +319,19 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 total_sq_norms /= approximate_with_n  # Average over projections
 
             else:
-                for dim in range(output_dim):
-                    # Reset Opacus state for fresh forward/backward pass
+                # Iterate over all output dimensions (flattened beyond batch dim).
+                # For 2D output (B, K): iterates over K using direct indexing.
+                # For 3D+ output (B, S, K, ...): flattens to (B, S*K*...) first.
+                n_output_dims = sample_out[0].numel()
+                needs_flatten = sample_out.dim() > 2
+                for dim in range(n_output_dims):
                     _reset_opacus_state(model)
 
                     gs_model.zero_grad()
-                    out = gs_model(inputs)[:, dim]
-                    out.sum().backward()
+                    out = gs_model(inputs)
+                    if needs_flatten:
+                        out = out.reshape(out.shape[0], -1)
+                    out[:, dim].sum().backward()
 
                     total_sq_norms += gs_model.get_norm_sample() ** 2
 

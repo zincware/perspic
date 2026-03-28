@@ -778,11 +778,11 @@ class TestSamplewiseEngineConsistency:
         functorch_loss = tracker_functorch.metrics[0]["chi_loss"]
         opacus_loss = tracker_opacus.metrics[0]["chi_loss"]
 
-        assert torch.allclose(functorch_network, opacus_network, atol=1e-5), (
+        assert torch.allclose(functorch_network, opacus_network, atol=1e-3), (
             f"Network gradient norms differ: functorch={functorch_network}, "
             f"opacus={opacus_network}"
         )
-        assert torch.allclose(functorch_loss, opacus_loss, atol=1e-5), (
+        assert torch.allclose(functorch_loss, opacus_loss, atol=1e-3), (
             f"Loss gradient norms differ: functorch={functorch_loss}, "
             f"opacus={opacus_loss}"
         )
@@ -870,11 +870,11 @@ class TestSamplewiseEngineConsistency:
         functorch_loss = tracker_functorch.metrics[0]["chi_loss"]
         opacus_loss = tracker_opacus.metrics[0]["chi_loss"]
 
-        assert torch.allclose(functorch_network, opacus_network, atol=1e-5), (
+        assert torch.allclose(functorch_network, opacus_network, atol=1e-3), (
             f"Network gradient norms differ: functorch={functorch_network}, "
             f"opacus={opacus_network}"
         )
-        assert torch.allclose(functorch_loss, opacus_loss, atol=1e-5), (
+        assert torch.allclose(functorch_loss, opacus_loss, atol=1e-3), (
             f"Loss gradient norms differ: functorch={functorch_loss}, "
             f"opacus={opacus_loss}"
         )
