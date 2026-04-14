@@ -216,3 +216,7 @@ __marimo__/
 
 # Ignore logs
 logs/
+*/logs/
+*ckpt
+.nfs**
+examples/cifar-10-batches-py/*
