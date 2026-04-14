@@ -221,7 +221,9 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             inputs: Input tensor batch of shape (batch_size, ...).
             targets: Target tensor batch of shape (batch_size, ...).
             normalize: If True, sample-wise metrics are corrected to scale properly with
-                batch-size.
+                batch-size and sequence length. Assumes targets contain one element per
+                loss-reduction unit (class indices, not one-hot). For one-hot targets,
+                use normalize=False and normalize manually.
 
         Returns:
             Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
@@ -242,9 +244,9 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
         # Optionally normalize the results
         if normalize:
-            batch_size = inputs.shape[0]
-            batch_grad_norms_network /= batch_size
-            batch_grad_norms_loss *= batch_size
+            n_elements = targets.numel()
+            batch_grad_norms_network /= n_elements
+            batch_grad_norms_loss *= n_elements
 
         model.zero_grad()
         return {
@@ -301,7 +303,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 # Each iteration requires a fresh forward pass because Opacus
                 # consumes activations during backward.
                 vectors = _draw_rademacher_random_vector(
-                    shape=(approximate_with_n, *sample_out.shape[1:]),  # (n, S, K)
+                    shape=(approximate_with_n, *sample_out.shape[1:]),
                     device=inputs.device,
                 )
 
@@ -320,16 +322,15 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
             else:
                 # Iterate over all output dimensions (flattened beyond batch dim).
-                # For 2D output (B, K): iterates over K using direct indexing.
-                # For 3D+ output (B, S, K, ...): flattens to (B, S*K*...) first.
+                # Non-2D outputs are reshaped to (B, -1) so indexing is uniform.
                 n_output_dims = sample_out[0].numel()
-                needs_flatten = sample_out.dim() > 2
+                needs_reshape = sample_out.dim() != 2
                 for dim in range(n_output_dims):
                     _reset_opacus_state(model)
 
                     gs_model.zero_grad()
                     out = gs_model(inputs)
-                    if needs_flatten:
+                    if needs_reshape:
                         out = out.reshape(out.shape[0], -1)
                     out[:, dim].sum().backward()
 
