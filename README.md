@@ -3,7 +3,7 @@ A tool to study neural network training dynamics.
 
 ## What is Perspic?
 
-Perspic provides efficient computation and logging of gradient-based metrics (gradient norms, loss sensitivities, coupling coefficients) to understand how neural networks learn. It integrates seamlessly with PyTorch Lightning through a simple `analyzer()` wrapper.
+Perspic provides efficient computation and logging of the loss-network-position (LNP) decomposition. Each of the components helps us to understand how neural networks learn. It integrates seamlessly with PyTorch Lightning by wrapping existing code, adding the analysis.
 
 ## Quick Start
 
@@ -11,9 +11,9 @@ Perspic provides efficient computation and logging of gradient-based metrics (gr
 from perspic import analyzer
 from pytorch_lightning import Trainer
 
-# Wrap your Lightning module
+# Wrap your Lightning module class
 model = analyzer(
-    lightning_module=YourLightningModule,
+    lightning_module=YourLightningModule, # class
     model=your_model,
     sample_wise_engine="opacus"
 )

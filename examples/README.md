@@ -157,7 +157,7 @@ examples/
 ├── batch_size_scaling_analysis.ipynb  # Theory + implementation
 ├── cifar10.ipynb                      # Core workflow
 ├── logging_scheduler.ipynb            # Efficient logging
-├── cifar10_CrossResponse.ipynb        # Response analysis
+├── cross10_cross_response.ipynb       # Response analysis
 ├── mup_integration.ipynb              # Advanced: μP + scaling laws
 └── core/
     └── hutchinson_convergence.py      # Support utilities
@@ -168,5 +168,5 @@ examples/
 ## See Also
 
 - [PyTorch Lightning Documentation](https://pytorch-lightning.readthedocs.io)
-- [Hutinson Trace Estimation Paper](https://arxiv.org/abs/2312.14499)
+- [Hutchinson Trace Estimation Paper](https://arxiv.org/abs/2312.14499)
 - [Maximal Update Parametrization (μP) Paper](https://arxiv.org/abs/2203.03466)
