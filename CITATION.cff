@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "perspic"
+keywords:
+  - "training dynamics"
+  - "learning theory"
+  - "neural network analysis"
+  - "collective variables"
+authors:
+  - given-names: Konstantin
+    family-names: Nikolaou
+    email: knikolaou@icp.uni-stuttgart.de
+    affiliation: University of Stuttgart
+    orcid: 'https://orcid.org/0009-0000-9926-680X'
+  - given-names: Jonas
+    family-names: Scheunemann
+    email: jscheunemann@icp.uni-stuttgart.de
+    affiliation: University of Stuttgart
+    orcid: 'https://orcid.org/0009-0000-6670-1596' 
+version: 0.0.1
+date-released: "2026-05-05"
+repository-code: "https://github.com/zincware/perspic"
