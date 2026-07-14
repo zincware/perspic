@@ -248,6 +248,7 @@ def analyzer(
             self._accum_grad_measure = None
             self._accum_train_loss = 0.0
             self._accum_measure_loss = 0.0
+            self._accum_step_losses = []  # micro-batch losses for per-opt-step logging
             # Track whether analysis is active for this cycle
             self._analysis_active = False
 
@@ -318,6 +319,20 @@ def analyzer(
 
                 self._accumulation_count += 1
 
+                if self.accumulation_steps > 1:
+                    self._accum_step_losses.append(output.detach())
+                    # Tag every micro-batch with its cycle's effective_step so
+                    # groupby(effective_step).mean() in the plot averages exactly
+                    # the K micro-batches of that cycle (no Lightning forward-fill
+                    # ambiguity). opt.step() has not fired yet, so +1 gives the
+                    # current cycle number.
+                    self.log(
+                        "effective_step",
+                        float(self._optimizer_step_count + 1),
+                        on_step=True,
+                        on_epoch=False,
+                    )
+
                 # Step optimizer only at end of accumulation cycle
                 if (
                     self._accumulation_count
@@ -326,6 +341,9 @@ def analyzer(
                     opt.step()
                     self._optimizer_step_count += 1
                     self._accumulation_count = 0
+
+                    if self.accumulation_steps > 1 and self._accum_step_losses:
+                        self._accum_step_losses.clear()
 
                     # Step schedulers with interval='step'
                     if (
@@ -504,6 +522,15 @@ def analyzer(
             if self.cross_response:
                 x2, y2 = cross_response_batch
 
+            # Save training grads before any analysis backward/zero_grad calls.
+            # sample_calc.compute and _accumulate_linearizer_grads both call
+            # model.zero_grad() internally; restoring here ensures the training
+            # accumulation loop sees unmodified gradients after this hook.
+            saved_grads = [
+                p.grad.clone() if p.grad is not None else None
+                for p in self.model.parameters()
+            ]
+
             with BatchStatSnapshot(self.model, x):
                 # Accumulate sample-wise metrics
                 self_metrics = self.sample_calc.compute(
@@ -543,6 +570,10 @@ def analyzer(
                         x2, y2, is_train=False
                     )
 
+            # Restore training grads clobbered by analysis backward passes
+            for p, s in zip(self.model.parameters(), saved_grads):
+                p.grad = s
+
             # On last micro-batch: finalize and log
             is_last = (
                 self._accumulation_count == self.accumulation_steps - 1
@@ -553,7 +584,12 @@ def analyzer(
             return None
 
         def _accumulate_linearizer_grads(self, x, y, is_train=True):
-            """Forward+backward on a micro-batch and add grads to accumulator."""
+            """Forward+backward on a micro-batch and add grads to accumulator.
+
+            Must be called inside a BatchStatSnapshot context (caller's
+            responsibility). Training grads are saved/restored by the caller
+            (_analyze_accumulated_step) around the full analysis block.
+            """
             self.model.zero_grad()
             loss = self.criterion(self.model(x), y)
             loss.backward()
@@ -586,16 +622,18 @@ def analyzer(
                         if acc is not None and p.grad is not None:
                             acc.add_(p.grad)
 
-            self.model.zero_grad()
-
         def _finalize_accumulated_analysis(self, x, x2):
             """Combine accumulated metrics and log results."""
             K = self.accumulation_steps
             B = x.shape[0]
 
-            # Combine sample-wise metrics
+            # Combine sample-wise metrics.
+            # Both chi_net and chi_loss are computed with normalize=True, which
+            # makes them extensive in the batch size via a 1/B or *B factor
+            # derived from mean-reduced loss. For an effective batch N=K*B, the
+            # correct aggregate for both quantities is the mean across micro-batches.
             chi_net_eff = sum(self._accum_chi_net) / K
-            chi_loss_eff = K * sum(self._accum_chi_loss)
+            chi_loss_eff = sum(self._accum_chi_loss) / K
 
             samples_result_self = {
                 "batch_grad_norms_network": chi_net_eff,
@@ -628,7 +666,7 @@ def analyzer(
             chi_coup_cross = None
             if self._accum_grad_measure is not None:
                 chi_net_cross_eff = sum(self._accum_cross_chi_net) / K
-                chi_loss_cross_eff = K * sum(self._accum_cross_chi_loss)
+                chi_loss_cross_eff = sum(self._accum_cross_chi_loss) / K
                 samples_result_cross = {
                     "batch_grad_norms_network": chi_net_cross_eff,
                     "batch_grad_norms_loss": chi_loss_cross_eff,
@@ -694,6 +732,7 @@ def analyzer(
             self._accum_grad_measure = None
             self._accum_train_loss = 0.0
             self._accum_measure_loss = 0.0
+            self._accum_step_losses.clear()
 
         def _log_analysis_results(
             self,

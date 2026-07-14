@@ -1201,10 +1201,15 @@ class TestGradientAccumulation:
         assert torch.allclose(logged["chi_net"], torch.tensor(3.0))
 
     @patch.object(SamplewiseCalculatorOpacus, "compute")
-    def test_accumulated_chi_loss_is_k_times_sum(
+    def test_accumulated_chi_loss_is_mean(
         self, mock_compute, simple_lightning_module, sample_batch
     ):
-        """chi_loss_eff = K * sum of per-micro-batch chi_loss values."""
+        """chi_loss_eff = mean of per-micro-batch chi_loss values.
+
+        chi_loss is computed with normalize=True against a mean-reduced loss,
+        so the correct aggregation for an effective batch is the mean across
+        micro-batches (same as chi_net), not K * sum.
+        """
         mock_compute.side_effect = [
             {
                 "batch_grad_norms_network": torch.tensor(2.0),
@@ -1235,8 +1240,8 @@ class TestGradientAccumulation:
             for call in model.log.call_args_list
         }
 
-        # chi_loss_eff = K * sum([3.0, 5.0]) = 2 * 8.0 = 16.0
-        assert torch.allclose(logged["chi_loss"], torch.tensor(16.0))
+        # chi_loss_eff = mean([3.0, 5.0]) = 4.0
+        assert torch.allclose(logged["chi_loss"], torch.tensor(4.0))
 
     # --- G. Linearizer gradient accumulation ---
 
@@ -1333,9 +1338,9 @@ class TestGradientAccumulation:
             for call in model.log.call_args_list
         }
 
-        # chi_net_eff = mean([2.0, 2.0]) = 2.0
-        # chi_loss_eff = 2 * sum([3.0, 3.0]) = 12.0
-        # coupling = grad_norm_sq / (12.0 * 2.0)
+        # chi_net_eff  = mean([2.0, 2.0]) = 2.0
+        # chi_loss_eff = mean([3.0, 3.0]) = 3.0
+        # coupling = grad_norm_sq / (3.0 * 2.0)
         assert "chi_coup" in logged
         expected_coupling = (
             logged["grad_norm_squared"] / (logged["chi_loss"] * logged["chi_net"])
@@ -1489,3 +1494,51 @@ class TestGradientAccumulation:
         assert len(chi_net_calls) == 2
         assert torch.allclose(chi_net_calls[0], torch.tensor(10.0))
         assert torch.allclose(chi_net_calls[1], torch.tensor(20.0))
+
+    def test_analysis_does_not_corrupt_training_gradients(
+        self, simple_lightning_module, sample_batch
+    ):
+        """Analysis backward must not affect the gradients seen by the optimizer.
+
+        With accumulation_steps=2, the gradient accumulated into p.grad after
+        two training_step calls (with analysis enabled) must match the gradient
+        from two training_step calls with analysis disabled.
+        """
+        torch.manual_seed(0)
+        x, y = sample_batch
+
+        def run_two_steps(with_analysis):
+            torch.manual_seed(0)
+            model = analyzer(
+                simple_lightning_module,
+                micro_batch_size=4,
+                effective_batch_size=8,
+                disable_analyzer=not with_analysis,
+                log_metrics=False,
+            )
+            model.log = Mock()
+            # Use a real optimizer so p.grad is populated
+            opt = torch.optim.SGD(model.parameters(), lr=0.0)
+            model.optimizers = Mock(return_value=opt)
+            model.manual_backward = lambda loss: loss.backward()
+            model._trainer = None
+
+            opt.zero_grad()
+            model._accumulation_count = 0
+            model.training_step((x, y), 0)
+            model.training_step((x, y), 1)
+
+            return [
+                p.grad.clone() if p.grad is not None else None
+                for p in model.model.parameters()
+            ]
+
+        grads_with = run_two_steps(with_analysis=True)
+        grads_without = run_two_steps(with_analysis=False)
+
+        for g_with, g_without in zip(grads_with, grads_without):
+            assert g_with is not None and g_without is not None
+            assert torch.allclose(g_with, g_without, atol=1e-6), (
+                f"Analysis pass corrupted training gradients: "
+                f"max diff {(g_with - g_without).abs().max().item()}"
+            )
