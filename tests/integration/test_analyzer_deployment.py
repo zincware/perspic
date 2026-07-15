@@ -1247,6 +1247,278 @@ class TestAnalyzerWithCrossResponseLoader:
         assert not torch.isnan(torch.tensor(logged_metrics["cross_grad_dot_product"]))
 
 
+class TestAnalyzerWithIndependentMeasure:
+    """Integration tests for the independent measure_dataloader /
+    measure_batch_size path (decoupled from train batch/accumulation)."""
+
+    class _MetricsTracker(pl.Callback):
+        """Collects trainer.callback_metrics after every training batch."""
+
+        def __init__(self):
+            self.metrics = []
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            self.metrics.append(dict(trainer.callback_metrics))
+
+    def test_independent_measure_end_to_end(self, simple_lightning_module):
+        """A plain train DataLoader + measure_dataloader (no CombinedLoader)
+        trains end-to-end and logs cross-response metrics."""
+        torch.manual_seed(42)
+
+        train_x = torch.randn(32, 10)
+        train_y = torch.randint(0, 2, (32,))
+        train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=8)
+
+        measure_x = torch.randn(16, 10)
+        measure_y = torch.randint(0, 2, (16,))
+        measure_loader = DataLoader(
+            TensorDataset(measure_x, measure_y), batch_size=8, drop_last=True
+        )
+
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            log_metrics=True,
+        )
+
+        tracker = self._MetricsTracker()
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+            callbacks=[tracker],
+        )
+        trainer.fit(model, train_loader)
+
+        last = tracker.metrics[-1]
+        for key in (
+            "cross_loss",
+            "cross_grad_dot_product",
+            "cross_chi_net",
+            "cross_chi_loss",
+            "cross_chi_coup",
+        ):
+            assert key in last
+
+    def test_independent_measure_with_accumulation(self, simple_lightning_module):
+        """Independent measure batch combined with train-side gradient
+        accumulation exercises the _finalize_accumulated_analysis call site."""
+        torch.manual_seed(42)
+
+        train_x = torch.randn(32, 10)
+        train_y = torch.randint(0, 2, (32,))
+        train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=4)
+
+        measure_x = torch.randn(16, 10)
+        measure_y = torch.randint(0, 2, (16,))
+        measure_loader = DataLoader(
+            TensorDataset(measure_x, measure_y), batch_size=4, drop_last=True
+        )
+
+        model = analyzer(
+            simple_lightning_module,
+            micro_batch_size=4,
+            effective_batch_size=8,
+            measure_dataloader=measure_loader,
+            log_metrics=True,
+        )
+
+        tracker = self._MetricsTracker()
+        trainer = pl.Trainer(
+            max_epochs=1,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+            callbacks=[tracker],
+        )
+        trainer.fit(model, train_loader)
+
+        logged_cross = [m for m in tracker.metrics if "cross_grad_dot_product" in m]
+        assert len(logged_cross) > 0
+
+    def test_independent_measure_sweep_suffixed_keys(self, simple_lightning_module):
+        """A measure_batch_size sweep under a logarithmic schedule logs
+        @bs{S}-suffixed cross metrics instead of the unsuffixed cross_* keys."""
+        from perspic.logger import logarithmic_windows
+
+        torch.manual_seed(42)
+
+        train_x = torch.randn(64, 10)
+        train_y = torch.randint(0, 2, (64,))
+        train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=8)
+
+        measure_x = torch.randn(16, 10)
+        measure_y = torch.randint(0, 2, (16,))
+        measure_loader = DataLoader(
+            TensorDataset(measure_x, measure_y), batch_size=4, drop_last=True
+        )
+
+        schedule = logarithmic_windows(max_steps=8)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=[4, 8],
+            measure_subset_seed=0,
+            analysis_schedule=schedule,
+            log_metrics=True,
+        )
+
+        tracker = self._MetricsTracker()
+        trainer = pl.Trainer(
+            max_steps=4,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+            callbacks=[tracker],
+        )
+        trainer.fit(model, train_loader)
+
+        all_keys = set()
+        for m in tracker.metrics:
+            all_keys.update(m.keys())
+
+        assert "cross_grad_dot_product@bs4" in all_keys
+        assert "cross_grad_dot_product@bs8" in all_keys
+        assert "cross_grad_dot_product" not in all_keys
+
+    def test_independent_measure_sweep_mixed_regime(self, simple_lightning_module):
+        """A sweep spanning sizes below, at, and above the measure loader's
+        batch_size (the max single-pass size) trains end-to-end and logs
+        every size: below/at it as a single direct pass, above it as an
+        accumulated measurement."""
+        from perspic.logger import logarithmic_windows
+
+        torch.manual_seed(42)
+
+        train_x = torch.randn(64, 10)
+        train_y = torch.randint(0, 2, (64,))
+        train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=8)
+
+        measure_x = torch.randn(32, 10)
+        measure_y = torch.randint(0, 2, (32,))
+        measure_loader = DataLoader(
+            TensorDataset(measure_x, measure_y), batch_size=8, drop_last=True
+        )
+
+        schedule = logarithmic_windows(max_steps=8)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=[2, 8, 32],
+            measure_subset_seed=0,
+            analysis_schedule=schedule,
+            log_metrics=True,
+        )
+
+        tracker = self._MetricsTracker()
+        trainer = pl.Trainer(
+            max_steps=4,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+            callbacks=[tracker],
+        )
+        trainer.fit(model, train_loader)
+
+        all_keys = set()
+        for m in tracker.metrics:
+            all_keys.update(m.keys())
+
+        for S in (2, 8, 32):
+            assert f"cross_grad_dot_product@bs{S}" in all_keys
+            assert f"cross_batch_size@bs{S}" in all_keys
+
+    def test_independent_measure_reproducible(self, simple_lightning_module):
+        """Two fits with the same measure_subset_seed produce an identical
+        swept cross metric (the measure loader is shuffle=False, so only the
+        subset draw needs a fixed seed for full reproducibility)."""
+        from perspic.logger import logarithmic_windows
+
+        def run():
+            torch.manual_seed(42)
+            train_x = torch.randn(32, 10)
+            train_y = torch.randint(0, 2, (32,))
+            train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=8)
+
+            torch.manual_seed(7)
+            measure_x = torch.randn(16, 10)
+            measure_y = torch.randint(0, 2, (16,))
+            measure_loader = DataLoader(
+                TensorDataset(measure_x, measure_y), batch_size=4, drop_last=True
+            )
+
+            schedule = logarithmic_windows(max_steps=8)
+            torch.manual_seed(42)
+            model = analyzer(
+                simple_lightning_module,
+                measure_dataloader=measure_loader,
+                measure_batch_size=[4, 8],
+                measure_subset_seed=99,
+                analysis_schedule=schedule,
+                log_metrics=True,
+            )
+
+            tracker = self._MetricsTracker()
+            trainer = pl.Trainer(
+                max_steps=4,
+                accelerator="cpu",
+                enable_progress_bar=False,
+                enable_model_summary=False,
+                logger=False,
+                callbacks=[tracker],
+            )
+            trainer.fit(model, train_loader)
+
+            for m in reversed(tracker.metrics):
+                if "cross_grad_dot_product@bs4" in m:
+                    return m["cross_grad_dot_product@bs4"]
+            return None
+
+        val_a = run()
+        val_b = run()
+
+        assert val_a is not None
+        assert torch.allclose(torch.as_tensor(val_a), torch.as_tensor(val_b))
+
+    def test_measure_loader_smaller_than_train(self, simple_lightning_module):
+        """A measure_dataloader much smaller than the training run cycles via
+        the persistent iterator without raising StopIteration."""
+        torch.manual_seed(42)
+
+        train_x = torch.randn(64, 10)
+        train_y = torch.randint(0, 2, (64,))
+        train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=4)
+
+        measure_x = torch.randn(4, 10)
+        measure_y = torch.randint(0, 2, (4,))
+        measure_loader = DataLoader(
+            TensorDataset(measure_x, measure_y), batch_size=4, drop_last=True
+        )
+
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            log_metrics=True,
+        )
+
+        trainer = pl.Trainer(
+            max_steps=16,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+        )
+
+        # Should complete without StopIteration
+        trainer.fit(model, train_loader)
+        assert trainer.global_step == 16
+
+
 class TestSchedulerIntegration:
     """Integration tests for learning rate schedulers."""
 

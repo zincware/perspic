@@ -1,5 +1,6 @@
 """Unit tests for the analyzer module."""
 
+import warnings
 from unittest.mock import Mock, patch
 
 import pytest
@@ -7,6 +8,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
 
 from perspic.analyzer import analyzer
 from perspic.calculator.linearizer import Linearizer
@@ -102,6 +104,16 @@ def sample_batch():
     x = torch.randn(4, 10)
     y = torch.randint(0, 2, (4,))
     return x, y
+
+
+def _make_measure_dataloader(n_samples, micro, seed=123, drop_last=True):
+    """Build a deterministic measure DataLoader (shuffle=False) for testing
+    the independent measure-batch-size path."""
+    g = torch.Generator().manual_seed(seed)
+    x = torch.randn(n_samples, 10, generator=g)
+    y = torch.randint(0, 2, (n_samples,), generator=g)
+    ds = TensorDataset(x, y)
+    return DataLoader(ds, batch_size=micro, shuffle=False, drop_last=drop_last)
 
 
 # Test Classes
@@ -786,31 +798,24 @@ class TestAnalyzerScheduling:
 
 class TestGradientAccumulation:
     """Test gradient accumulation functionality."""
+
     # The tests are categorized into sections A-J for clarity.
 
     # --- A. Parameter validation ---
 
-    def test_accumulation_steps_default(
-        self, simple_lightning_module
-    ):
+    def test_accumulation_steps_default(self, simple_lightning_module):
         """No params → accumulation_steps=1."""
         model = analyzer(simple_lightning_module)
         assert model.accumulation_steps == 1
 
-    def test_batch_size_only_no_accumulation(
-        self, simple_lightning_module
-    ):
+    def test_batch_size_only_no_accumulation(self, simple_lightning_module):
         """micro_batch_size alone → no accumulation, value stored."""
-        model = analyzer(
-            simple_lightning_module, micro_batch_size=8
-        )
+        model = analyzer(simple_lightning_module, micro_batch_size=8)
         assert model.accumulation_steps == 1
         assert model.micro_batch_size == 8
         assert model.effective_batch_size is None
 
-    def test_accumulation_steps_computed(
-        self, simple_lightning_module
-    ):
+    def test_accumulation_steps_computed(self, simple_lightning_module):
         """micro=8, effective=32 → accumulation_steps=4."""
         model = analyzer(
             simple_lightning_module,
@@ -819,55 +824,39 @@ class TestGradientAccumulation:
         )
         assert model.accumulation_steps == 4
 
-    def test_effective_without_micro_batch_raises(
-        self, simple_lightning_module
-    ):
+    def test_effective_without_micro_batch_raises(self, simple_lightning_module):
         """effective_batch_size alone → ValueError."""
-        with pytest.raises(
-            ValueError, match="micro_batch_size must be specified"
-        ):
+        with pytest.raises(ValueError, match="micro_batch_size must be specified"):
             analyzer(
                 simple_lightning_module,
                 effective_batch_size=32,
             )
 
-    def test_effective_less_than_micro_batch_raises(
-        self, simple_lightning_module
-    ):
+    def test_effective_less_than_micro_batch_raises(self, simple_lightning_module):
         """effective=8, micro=32 → ValueError."""
-        with pytest.raises(
-            ValueError, match="must be >= micro_batch_size"
-        ):
+        with pytest.raises(ValueError, match="must be >= micro_batch_size"):
             analyzer(
                 simple_lightning_module,
                 micro_batch_size=32,
                 effective_batch_size=8,
             )
 
-    def test_not_divisible_raises(
-        self, simple_lightning_module
-    ):
+    def test_not_divisible_raises(self, simple_lightning_module):
         """effective=30, micro=8 → ValueError (not divisible)."""
-        with pytest.raises(
-            ValueError, match="must be divisible"
-        ):
+        with pytest.raises(ValueError, match="must be divisible"):
             analyzer(
                 simple_lightning_module,
                 micro_batch_size=8,
                 effective_batch_size=30,
             )
 
-    def test_accumulation_with_delegate_raises(
-        self, manual_optimization_module
-    ):
+    def test_accumulation_with_delegate_raises(self, manual_optimization_module):
         """Accumulation + manual optimization module → ValueError."""
         with pytest.raises(
             ValueError,
             match="Gradient accumulation is not supported",
         ):
-            with pytest.warns(
-                UserWarning, match="manual optimization"
-            ):
+            with pytest.warns(UserWarning, match="manual optimization"):
                 analyzer(
                     manual_optimization_module,
                     micro_batch_size=8,
@@ -876,9 +865,7 @@ class TestGradientAccumulation:
 
     # --- B. Optimizer behavior ---
 
-    def test_zero_grad_once_per_cycle(
-        self, simple_lightning_module, sample_batch
-    ):
+    def test_zero_grad_once_per_cycle(self, simple_lightning_module, sample_batch):
         """4 micro-steps, accum=4: zero_grad called exactly 1x."""
         model = analyzer(
             simple_lightning_module,
@@ -896,9 +883,7 @@ class TestGradientAccumulation:
 
         assert mock_opt.zero_grad.call_count == 1
 
-    def test_step_once_per_cycle(
-        self, simple_lightning_module, sample_batch
-    ):
+    def test_step_once_per_cycle(self, simple_lightning_module, sample_batch):
         """4 micro-steps, accum=4: opt.step() called exactly 1x."""
         model = analyzer(
             simple_lightning_module,
@@ -916,9 +901,7 @@ class TestGradientAccumulation:
 
         assert mock_opt.step.call_count == 1
 
-    def test_step_not_called_mid_cycle(
-        self, simple_lightning_module, sample_batch
-    ):
+    def test_step_not_called_mid_cycle(self, simple_lightning_module, sample_batch):
         """3 of 4 micro-steps done: opt.step() never called."""
         model = analyzer(
             simple_lightning_module,
@@ -936,9 +919,7 @@ class TestGradientAccumulation:
 
         mock_opt.step.assert_not_called()
 
-    def test_loss_scaled_for_backward(
-        self, simple_lightning_module, sample_batch
-    ):
+    def test_loss_scaled_for_backward(self, simple_lightning_module, sample_batch):
         """manual_backward receives loss / accumulation_steps."""
         model = analyzer(
             simple_lightning_module,
@@ -957,9 +938,7 @@ class TestGradientAccumulation:
         expected = output / 4
         assert torch.allclose(backward_arg, expected)
 
-    def test_unscaled_loss_returned(
-        self, simple_lightning_module, sample_batch
-    ):
+    def test_unscaled_loss_returned(self, simple_lightning_module, sample_batch):
         """training_step returns the original unscaled loss."""
         model = analyzer(
             simple_lightning_module,
@@ -975,9 +954,7 @@ class TestGradientAccumulation:
         output_accum = model.training_step((x, y), 0)
         assert isinstance(output_accum, torch.Tensor)
 
-    def test_two_full_cycles(
-        self, simple_lightning_module, sample_batch
-    ):
+    def test_two_full_cycles(self, simple_lightning_module, sample_batch):
         """4 steps, accum=2: zero_grad 2x, opt.step() 2x."""
         model = analyzer(
             simple_lightning_module,
@@ -1002,9 +979,7 @@ class TestGradientAccumulation:
         self, simple_lightning_module, sample_batch
     ):
         """No accum params: every call does zero_grad + step."""
-        model = analyzer(
-            simple_lightning_module, disable_analyzer=True
-        )
+        model = analyzer(simple_lightning_module, disable_analyzer=True)
         mock_opt = Mock(zero_grad=Mock(), step=Mock())
         model.optimizers = Mock(return_value=mock_opt)
         model.manual_backward = Mock()
@@ -1037,10 +1012,7 @@ class TestGradientAccumulation:
 
         model._before_training_step((x, y), 0)
 
-        logged = {
-            call[0][0]: call[0][1]
-            for call in model.log.call_args_list
-        }
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
         assert torch.allclose(logged["chi_net"], torch.tensor(1.5))
         assert torch.allclose(logged["chi_loss"], torch.tensor(2.5))
         assert logged["loss"] == 1.0
@@ -1049,9 +1021,7 @@ class TestGradientAccumulation:
 
     # --- D. Effective step ---
 
-    def test_effective_step_with_accumulation(
-        self, simple_lightning_module
-    ):
+    def test_effective_step_with_accumulation(self, simple_lightning_module):
         """_optimizer_step_count=2 → effective_step=2."""
         model = analyzer(
             simple_lightning_module,
@@ -1064,9 +1034,7 @@ class TestGradientAccumulation:
         model._optimizer_step_count = 0
         assert model.effective_step == 0
 
-    def test_effective_step_without_accumulation(
-        self, simple_lightning_module
-    ):
+    def test_effective_step_without_accumulation(self, simple_lightning_module):
         """_optimizer_step_count=42 → effective_step=42."""
         model = analyzer(simple_lightning_module)
         model._optimizer_step_count = 42
@@ -1154,10 +1122,7 @@ class TestGradientAccumulation:
         model._accumulation_count = 1
         model._before_training_step((x, y), 1)
 
-        logged = {
-            call[0][0]: call[0][1]
-            for call in model.log.call_args_list
-        }
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
         assert logged["analysis_step"] == 3
 
     # --- F. Sample-wise metric accumulation ---
@@ -1192,10 +1157,7 @@ class TestGradientAccumulation:
         model._accumulation_count = 1
         model._before_training_step((x, y), 1)
 
-        logged = {
-            call[0][0]: call[0][1]
-            for call in model.log.call_args_list
-        }
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
         # chi_net_eff = mean([2.0, 4.0]) = 3.0
         assert torch.allclose(logged["chi_net"], torch.tensor(3.0))
@@ -1235,10 +1197,7 @@ class TestGradientAccumulation:
         model._accumulation_count = 1
         model._before_training_step((x, y), 1)
 
-        logged = {
-            call[0][0]: call[0][1]
-            for call in model.log.call_args_list
-        }
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
         # chi_loss_eff = mean([3.0, 5.0]) = 4.0
         assert torch.allclose(logged["chi_loss"], torch.tensor(4.0))
@@ -1260,7 +1219,8 @@ class TestGradientAccumulation:
 
         # Run a full accumulation cycle (K=2)
         with patch.object(
-            SamplewiseCalculatorOpacus, "compute",
+            SamplewiseCalculatorOpacus,
+            "compute",
             return_value={
                 "batch_grad_norms_network": torch.tensor(1.0),
                 "batch_grad_norms_loss": torch.tensor(1.0),
@@ -1271,10 +1231,7 @@ class TestGradientAccumulation:
             model._accumulation_count = 1
             model._before_training_step((x, y), 1)
 
-        logged = {
-            call[0][0]: call[0][1]
-            for call in model.log.call_args_list
-        }
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
         # grad_norm_squared should be a positive float
         assert "grad_norm_squared" in logged
@@ -1286,23 +1243,20 @@ class TestGradientAccumulation:
         loss0 = model.criterion(model.model(x), y)
         loss0.backward()
         grads_0 = [
-            p.grad.clone() for p in model.model.parameters()
-            if p.grad is not None
+            p.grad.clone() for p in model.model.parameters() if p.grad is not None
         ]
 
         model.model.zero_grad()
         loss1 = model.criterion(model.model(x), y)
         loss1.backward()
         grads_1 = [
-            p.grad.clone() for p in model.model.parameters()
-            if p.grad is not None
+            p.grad.clone() for p in model.model.parameters() if p.grad is not None
         ]
         model.model.zero_grad()
 
-        expected_norm_sq = sum(
-            ((g0 + g1) ** 2).sum().item()
-            for g0, g1 in zip(grads_0, grads_1)
-        ) / 4  # K² = 2² = 4
+        expected_norm_sq = (
+            sum(((g0 + g1) ** 2).sum().item() for g0, g1 in zip(grads_0, grads_1)) / 4
+        )  # K² = 2² = 4
 
         assert abs(logged["grad_norm_squared"] - expected_norm_sq) < 1e-4
 
@@ -1322,7 +1276,8 @@ class TestGradientAccumulation:
         x, y = sample_batch
 
         with patch.object(
-            SamplewiseCalculatorOpacus, "compute",
+            SamplewiseCalculatorOpacus,
+            "compute",
             return_value={
                 "batch_grad_norms_network": torch.tensor(2.0),
                 "batch_grad_norms_loss": torch.tensor(3.0),
@@ -1333,17 +1288,14 @@ class TestGradientAccumulation:
             model._accumulation_count = 1
             model._before_training_step((x, y), 1)
 
-        logged = {
-            call[0][0]: call[0][1]
-            for call in model.log.call_args_list
-        }
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
         # chi_net_eff  = mean([2.0, 2.0]) = 2.0
         # chi_loss_eff = mean([3.0, 3.0]) = 3.0
         # coupling = grad_norm_sq / (3.0 * 2.0)
         assert "chi_coup" in logged
-        expected_coupling = (
-            logged["grad_norm_squared"] / (logged["chi_loss"] * logged["chi_net"])
+        expected_coupling = logged["grad_norm_squared"] / (
+            logged["chi_loss"] * logged["chi_net"]
         )
         assert abs(logged["chi_coup"] - expected_coupling) < 1e-5
 
@@ -1402,10 +1354,7 @@ class TestGradientAccumulation:
         model._accumulation_count = 1
         model._before_training_step((x, y), 1)
 
-        logged = {
-            call[0][0]: call[0][1]
-            for call in model.log.call_args_list
-        }
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
 
         assert "effective_batch_size" in logged
         # micro_batch_size=4, accumulation_steps=2 → 4*2=8
@@ -1486,9 +1435,7 @@ class TestGradientAccumulation:
 
         # Get chi_net from cycle 2 (the last logged value)
         chi_net_calls = [
-            call[0][1]
-            for call in model.log.call_args_list
-            if call[0][0] == "chi_net"
+            call[0][1] for call in model.log.call_args_list if call[0][0] == "chi_net"
         ]
         # Cycle 1: mean([10, 10]) = 10, Cycle 2: mean([20, 20]) = 20
         assert len(chi_net_calls) == 2
@@ -1542,3 +1489,595 @@ class TestGradientAccumulation:
                 f"Analysis pass corrupted training gradients: "
                 f"max diff {(g_with - g_without).abs().max().item()}"
             )
+
+
+class TestIndependentMeasureResponse:
+    """Test the independent measure_dataloader / measure_batch_size path."""
+
+    # --- A. Parameter validation ---
+
+    def test_infers_measure_micro_from_dataloader(self, simple_lightning_module):
+        """measure micro-batch size is inferred from the loader's batch_size."""
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        model = analyzer(simple_lightning_module, measure_dataloader=measure_loader)
+        assert model._measure_micro_batch_size == 4
+        assert model._measure_batch_sizes == [4]
+
+    def test_measure_batch_size_int_normalized_to_list(self, simple_lightning_module):
+        """A scalar measure_batch_size is normalized to a length-1 list."""
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=8,
+        )
+        assert model._measure_batch_sizes == [8]
+
+    def test_measure_batch_size_not_divisible_raises(self, simple_lightning_module):
+        """measure_batch_size above micro, not an exact multiple, raises."""
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        with pytest.raises(ValueError, match="exact multiple"):
+            analyzer(
+                simple_lightning_module,
+                measure_dataloader=measure_loader,
+                measure_batch_size=6,
+            )
+
+    def test_measure_batch_size_below_micro_allowed(self, simple_lightning_module):
+        """measure_batch_size below the measure micro size is valid: it runs
+        as a single direct pass (no accumulation), not an error."""
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=2,
+        )
+        assert model._measure_batch_sizes == [2]
+
+    def test_measure_dataloader_batch_size_none_raises(self, simple_lightning_module):
+        """A measure_dataloader with batch_size=None (manual batching) raises."""
+        ds = TensorDataset(torch.randn(4, 10), torch.randint(0, 2, (4,)))
+        loader = DataLoader(ds, batch_size=None)
+        with pytest.raises(ValueError, match="batch_size"):
+            analyzer(simple_lightning_module, measure_dataloader=loader)
+
+    def test_measure_params_without_dataloader_raises(self, simple_lightning_module):
+        """measure_batch_size/measure_subset_seed require measure_dataloader."""
+        with pytest.raises(
+            ValueError, match="only valid together with measure_dataloader"
+        ):
+            analyzer(simple_lightning_module, measure_batch_size=8)
+
+    def test_sweep_without_schedule_warns(self, simple_lightning_module):
+        """A multi-size sweep without an analysis_schedule warns."""
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        with pytest.warns(UserWarning, match="batch-size sweep"):
+            analyzer(
+                simple_lightning_module,
+                measure_dataloader=measure_loader,
+                measure_batch_size=[4, 8],
+            )
+
+    def test_sweep_with_schedule_does_not_warn(self, simple_lightning_module):
+        """A multi-size sweep with a logarithmic analysis_schedule doesn't warn."""
+        from perspic.logger import logarithmic_windows
+
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        schedule = logarithmic_windows(max_steps=100)
+
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            analyzer(
+                simple_lightning_module,
+                measure_dataloader=measure_loader,
+                measure_batch_size=[4, 8],
+                analysis_schedule=schedule,
+            )
+        assert not any("batch-size sweep" in str(w.message) for w in record)
+
+    # --- B. Single-measure logging behavior ---
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "compute")
+    def test_logs_cross_keys_single_measure(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """A single measure_batch_size logs the existing unsuffixed cross_* keys."""
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=8,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+        model._before_training_step((x, y), 0)
+
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+        for key in (
+            "cross_chi_net",
+            "cross_chi_loss",
+            "cross_chi_coup",
+            "cross_loss",
+            "cross_grad_dot_product",
+            "cross_batch_size",
+        ):
+            assert key in logged
+        assert logged["cross_batch_size"] == 8
+        assert "cross_chi_net@bs8" not in logged
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute_cross_metrics")
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    def test_measure_chi_is_mean_over_kmeasure(
+        self,
+        mock_compute,
+        mock_compute_cross,
+        simple_lightning_module,
+        sample_batch,
+    ):
+        """Measure-side chi is averaged over K_measure = S // measure_micro,
+        not the (different) train accumulation_steps."""
+        # 3 train micro-batches (accumulation_steps=3), then 2 measure chunks
+        # (measure_batch_size=8, measure_micro=4 -> K_measure=2).
+        values = [
+            {
+                "batch_grad_norms_network": torch.tensor(2.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+            {
+                "batch_grad_norms_network": torch.tensor(4.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+            {
+                "batch_grad_norms_network": torch.tensor(6.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+            {
+                "batch_grad_norms_network": torch.tensor(10.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+            {
+                "batch_grad_norms_network": torch.tensor(20.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+        ]
+        mock_compute.side_effect = values
+        mock_compute_cross.return_value = {
+            "batch_grad_norms_network": torch.tensor(0.0),
+            "batch_grad_norms_loss": torch.tensor(0.0),
+        }
+
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=5)
+        model = analyzer(
+            simple_lightning_module,
+            micro_batch_size=4,
+            effective_batch_size=12,
+            measure_dataloader=measure_loader,
+            measure_batch_size=8,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        model._accumulation_count = 0
+        model._before_training_step((x, y), 0)
+        model._accumulation_count = 1
+        model._before_training_step((x, y), 1)
+        model._accumulation_count = 2
+        model._before_training_step((x, y), 2)
+
+        assert mock_compute_cross.call_count == 1
+        _, kwargs = mock_compute_cross.call_args
+        measure_agg = kwargs["sample_wise_metrics_cross"]
+        # mean([10.0, 20.0]) = 15.0, NOT sum/3 (train K) == 10.0
+        assert torch.allclose(
+            measure_agg["batch_grad_norms_network"], torch.tensor(15.0)
+        )
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "compute")
+    def test_measure_grad_dot_reference(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """cross_grad_dot_product matches a hand-computed <grad_train, grad_measure>."""
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+
+        measure_loader = _make_measure_dataloader(n_samples=4, micro=4, seed=99)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        model._before_training_step((x, y), 0)
+
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+        assert "cross_grad_dot_product" in logged
+
+        # Hand-compute: grad_train = ∇L(x, y); grad_measure = ∇L(x_m, y_m),
+        # where x_m, y_m is the same (only) batch measure_loader yields
+        # (shuffle=False), reused via a fresh iterator over the same loader.
+        x_m, y_m = next(iter(measure_loader))
+
+        model.model.zero_grad()
+        loss_t = model.criterion(model.model(x), y)
+        loss_t.backward()
+        grad_train = [p.grad.clone() for p in model.model.parameters()]
+
+        model.model.zero_grad()
+        loss_m = model.criterion(model.model(x_m), y_m)
+        loss_m.backward()
+        grad_measure = [p.grad.clone() for p in model.model.parameters()]
+        model.model.zero_grad()
+
+        expected_dot = sum(
+            (g1 * g2).sum().item() for g1, g2 in zip(grad_train, grad_measure)
+        )
+        assert abs(logged["cross_grad_dot_product"] - expected_dot) < 1e-4
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "compute")
+    def test_direct_pass_below_micro_reference(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """A measure_batch_size below the measure micro size runs as a
+        single direct pass (K_measure=1, no accumulation/padding) on exactly
+        S samples taken from the front of the gathered pool."""
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=8, seed=99)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=4,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        model._before_training_step((x, y), 0)
+
+        # 1 call for the train self chi + exactly 1 measure-side call
+        # (K_measure=1: a single direct pass, not padded up to micro=8).
+        assert mock_compute.call_count == 2
+
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+        assert logged["cross_batch_size"] == 4
+
+        # Hand-compute the reference: the pool is built from ceil(4/8)=1
+        # micro-batch pull (the loader's only 8-sample batch), sliced to the
+        # first S_max=4 samples.
+        x_full, y_full = next(iter(measure_loader))
+        x_m, y_m = x_full[:4], y_full[:4]
+
+        model.model.zero_grad()
+        loss_t = model.criterion(model.model(x), y)
+        loss_t.backward()
+        grad_train = [p.grad.clone() for p in model.model.parameters()]
+
+        model.model.zero_grad()
+        loss_m = model.criterion(model.model(x_m), y_m)
+        loss_m.backward()
+        grad_measure = [p.grad.clone() for p in model.model.parameters()]
+        model.model.zero_grad()
+
+        expected_dot = sum(
+            (g1 * g2).sum().item() for g1, g2 in zip(grad_train, grad_measure)
+        )
+        assert abs(logged["cross_grad_dot_product"] - expected_dot) < 1e-4
+
+    def test_measure_backward_does_not_corrupt_training_grad(
+        self, simple_lightning_module, sample_batch
+    ):
+        """Measure-side backward passes inside _measure_response must not
+        corrupt the (possibly partial) accumulated training gradient."""
+        x, y = sample_batch
+
+        def run_two_steps(with_measure):
+            torch.manual_seed(0)
+            kwargs = {}
+            if with_measure:
+                measure_loader = _make_measure_dataloader(n_samples=4, micro=4, seed=3)
+                kwargs = {"measure_dataloader": measure_loader}
+
+            model = analyzer(
+                simple_lightning_module,
+                micro_batch_size=4,
+                effective_batch_size=8,
+                log_metrics=False,
+                **kwargs,
+            )
+            model.log = Mock()
+            opt = torch.optim.SGD(model.parameters(), lr=0.0)
+            model.optimizers = Mock(return_value=opt)
+            model.manual_backward = lambda loss: loss.backward()
+            model._trainer = None
+
+            opt.zero_grad()
+            model._accumulation_count = 0
+            model.training_step((x, y), 0)
+            model.training_step((x, y), 1)
+
+            return [
+                p.grad.clone() if p.grad is not None else None
+                for p in model.model.parameters()
+            ]
+
+        grads_with = run_two_steps(with_measure=True)
+        grads_without = run_two_steps(with_measure=False)
+
+        for g_with, g_without in zip(grads_with, grads_without):
+            assert g_with is not None and g_without is not None
+            assert torch.allclose(g_with, g_without, atol=1e-6), (
+                f"Measure-response backward corrupted training gradients: "
+                f"max diff {(g_with - g_without).abs().max().item()}"
+            )
+
+    # --- C. Subset sampling ---
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "compute")
+    def test_measure_subset_deterministic_with_seed(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """The same measure_subset_seed yields the same subset (and hence the
+        same swept cross metric); a different seed yields a different one."""
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+        x, y = sample_batch
+
+        def run(seed):
+            # Fix the model init seed too: cross_grad_dot_product is a real
+            # gradient dot product, so it depends on model weights as well
+            # as on which subset is drawn.
+            torch.manual_seed(0)
+            measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=11)
+            model = analyzer(
+                simple_lightning_module,
+                measure_dataloader=measure_loader,
+                measure_batch_size=[8, 4],
+                measure_subset_seed=seed,
+                log_metrics=True,
+            )
+            model.log = Mock()
+            model._before_training_step((x, y), 0)
+            logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+            return logged["cross_grad_dot_product@bs4"]
+
+        val_a = run(seed=123)
+        val_b = run(seed=123)
+        val_c = run(seed=456)
+
+        assert val_a == val_b
+        assert val_a != val_c
+
+    @patch.object(Linearizer, "compute")
+    def test_measure_subset_size_matches_S(
+        self, mock_probe, simple_lightning_module, sample_batch
+    ):
+        """The number of measure micro-batch chunks processed for each swept
+        size equals S // measure_micro_batch_size."""
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+
+        measure_loader = _make_measure_dataloader(n_samples=16, micro=4, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=[16, 8],
+            measure_subset_seed=0,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        with patch.object(
+            SamplewiseCalculatorOpacus,
+            "compute",
+            return_value={
+                "batch_grad_norms_network": torch.tensor(1.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+        ) as mock_compute:
+            model._before_training_step((x, y), 0)
+            # 1 call for train self chi + (16 // 4 = 4) + (8 // 4 = 2) measure
+            # chunks.
+            assert mock_compute.call_count == 1 + 4 + 2
+
+    @patch.object(Linearizer, "compute")
+    def test_pool_gather_when_S_max_below_micro(
+        self, mock_probe, simple_lightning_module, sample_batch
+    ):
+        """When every swept size is below the measure micro size, the pool
+        gather still pulls at least one micro-batch (ceil(S_max/micro)=1)
+        and slices it down to S_max samples, rather than pulling zero."""
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+
+        measure_loader = _make_measure_dataloader(n_samples=32, micro=16, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=[2, 4, 8],
+            measure_subset_seed=0,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        with patch.object(
+            model,
+            "_next_measure_micro_batch",
+            wraps=model._next_measure_micro_batch,
+        ) as mock_pull, patch.object(
+            SamplewiseCalculatorOpacus,
+            "compute",
+            return_value={
+                "batch_grad_norms_network": torch.tensor(1.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+        ):
+            model._before_training_step((x, y), 0)
+
+        # S_max=8 < micro=16 -> ceil(8/16)=1 pull, independent of how many
+        # sizes are swept below it.
+        assert mock_pull.call_count == 1
+
+    @patch.object(Linearizer, "compute")
+    def test_mixed_regime_sweep_chunk_counts(
+        self, mock_probe, simple_lightning_module, sample_batch
+    ):
+        """A sweep spanning sizes below, at, and above the measure micro
+        size produces the correct chunk count for each: K_measure=1 for
+        sizes <= micro (a single direct pass), K_measure=S // micro for
+        sizes above it (accumulated)."""
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+
+        measure_loader = _make_measure_dataloader(n_samples=32, micro=8, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=[2, 8, 32],
+            measure_subset_seed=0,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        with patch.object(
+            SamplewiseCalculatorOpacus,
+            "compute",
+            return_value={
+                "batch_grad_norms_network": torch.tensor(1.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+        ) as mock_compute:
+            model._before_training_step((x, y), 0)
+            # 1 train self chi call + (2 // 2 = 1) + (8 // 8 = 1)
+            # + (32 // 8 = 4) measure chunks.
+            assert mock_compute.call_count == 1 + 1 + 1 + 4
+
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+        for S in (2, 8, 32):
+            assert logged[f"cross_batch_size@bs{S}"] == S
+
+    # --- D. Sweep logging ---
+
+    @patch.object(SamplewiseCalculatorOpacus, "compute")
+    @patch.object(Linearizer, "compute")
+    def test_sweep_logs_suffixed_keys(
+        self, mock_probe, mock_compute, simple_lightning_module, sample_batch
+    ):
+        """Sweeping multiple measure_batch_size values logs @bs{S}-suffixed
+        keys instead of the unsuffixed cross_* keys."""
+        mock_compute.return_value = {
+            "batch_grad_norms_network": torch.tensor(1.0),
+            "batch_grad_norms_loss": torch.tensor(1.0),
+        }
+        mock_probe.return_value = {"self": (1.0, 0.0, -1.0), "cross": None}
+
+        measure_loader = _make_measure_dataloader(n_samples=8, micro=4, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=[4, 8],
+            measure_subset_seed=0,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+        model._before_training_step((x, y), 0)
+
+        logged = {call[0][0]: call[0][1] for call in model.log.call_args_list}
+        for S in (4, 8):
+            for key in (
+                "cross_chi_net",
+                "cross_chi_loss",
+                "cross_chi_coup",
+                "cross_grad_dot_product",
+                "cross_loss",
+                "cross_batch_size",
+            ):
+                assert f"{key}@bs{S}" in logged
+        assert "cross_chi_net" not in logged
+
+    # --- E. Persistent iterator ---
+
+    def test_measure_iterator_refills_on_exhaustion(
+        self, simple_lightning_module, sample_batch
+    ):
+        """A measure_dataloader smaller than what's pulled across several
+        analysis steps cycles instead of raising StopIteration."""
+        measure_loader = _make_measure_dataloader(n_samples=4, micro=4, seed=1)
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        with patch.object(
+            SamplewiseCalculatorOpacus,
+            "compute",
+            return_value={
+                "batch_grad_norms_network": torch.tensor(1.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+        ), patch.object(
+            Linearizer,
+            "compute",
+            return_value={"self": (1.0, 0.0, -1.0), "cross": None},
+        ):
+            for i in range(5):
+                model._before_training_step((x, y), i)
+
+    def test_measure_partial_last_batch_raises(
+        self, simple_lightning_module, sample_batch
+    ):
+        """drop_last=False measure loader with a non-divisible dataset raises
+        a clear ValueError instead of silently building a short pool."""
+        measure_loader = _make_measure_dataloader(
+            n_samples=6, micro=4, seed=2, drop_last=False
+        )
+        model = analyzer(
+            simple_lightning_module,
+            measure_dataloader=measure_loader,
+            measure_batch_size=8,
+            log_metrics=True,
+        )
+        model.log = Mock()
+        x, y = sample_batch
+
+        with patch.object(
+            SamplewiseCalculatorOpacus,
+            "compute",
+            return_value={
+                "batch_grad_norms_network": torch.tensor(1.0),
+                "batch_grad_norms_loss": torch.tensor(1.0),
+            },
+        ), patch.object(
+            Linearizer,
+            "compute",
+            return_value={"self": (1.0, 0.0, -1.0), "cross": None},
+        ):
+            with pytest.raises(ValueError, match="drop_last"):
+                model._before_training_step((x, y), 0)
