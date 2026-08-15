@@ -1,3 +1,4 @@
+import inspect
 import math
 import warnings
 from typing import Optional, Union
@@ -353,6 +354,71 @@ def analyzer(
                     "The wrapped model must have a 'criterion' attribute for loss "
                     "computation."
                 )
+
+        def on_save_checkpoint(self, checkpoint):
+            """Persist the analyzer's step/schedule state into the checkpoint.
+
+            Lightning does not know about these attributes (they live on the
+            dynamically created Analyzer subclass), so a full-state
+            trainer.fit(ckpt_path=...) resume would otherwise reset
+            ``effective_step`` to 0 and misalign the ``analysis_schedule``
+            (and the measure-subset RNG used by a batch-size sweep). We save
+            only the state needed to keep those aligned across a resume;
+            partial gradient-accumulation buffers and the measure iterator
+            are intentionally NOT persisted (a resumed run simply restarts
+            the current accumulation cycle / re-creates the measure iterator,
+            which is benign and always a no-op for accumulation_steps == 1).
+            """
+            super().on_save_checkpoint(checkpoint)
+            checkpoint["perspic_analyzer"] = {
+                "optimizer_step_count": self._optimizer_step_count,
+                "accumulation_count": self._accumulation_count,
+                "measure_gen_state": (
+                    self._measure_gen.get_state()
+                    if self._measure_gen is not None
+                    else None
+                ),
+            }
+
+        def on_load_checkpoint(self, checkpoint):
+            """Restore the analyzer state saved by on_save_checkpoint.
+
+            Tolerates checkpoints written before this hook existed (or by a
+            run without the independent-measure path): missing keys leave the
+            freshly-initialised defaults in place.
+            """
+            super().on_load_checkpoint(checkpoint)
+            state = checkpoint.get("perspic_analyzer")
+            if state is not None:
+                self._optimizer_step_count = state["optimizer_step_count"]
+                self._accumulation_count = state["accumulation_count"]
+                measure_gen_state = state.get("measure_gen_state")
+                if measure_gen_state is not None and self._measure_gen is not None:
+                    self._measure_gen.set_state(measure_gen_state)
+
+        def save_hyperparameters(self, *hp_args, ignore=None, frame=None, **hp_kwargs):
+            """Exclude analyzer-owned, non-serialisable objects from hparams.
+
+            The wrapped module calls self.save_hyperparameters() in its own
+            __init__; Lightning then walks the __init__ frames of the ENTIRE
+            inheritance chain (including this Analyzer subclass) and deep-copies
+            every captured argument. measure_dataloader is a live DataLoader --
+            deep-copying it fails outright when it holds a multiprocessing
+            iterator, and would otherwise copy the whole dataset into every
+            checkpoint. Drop it (a loader is not a hyperparameter). Forward the
+            caller's frame unchanged so the rest of the hparams are captured
+            exactly as before.
+            """
+            if ignore is None:
+                ignore = []
+            elif isinstance(ignore, str):
+                ignore = [ignore]
+            else:
+                ignore = list(ignore)
+            ignore = list(set(ignore + ["measure_dataloader"]))
+            if frame is None:
+                frame = inspect.currentframe().f_back
+            super().save_hyperparameters(*hp_args, ignore=ignore, frame=frame, **hp_kwargs)
 
         def training_step(self, batch, batch_idx):
             """Training step wrapper that adds sample-wise analysis.

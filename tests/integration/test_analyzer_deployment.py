@@ -1518,6 +1518,64 @@ class TestAnalyzerWithIndependentMeasure:
         trainer.fit(model, train_loader)
         assert trainer.global_step == 16
 
+    def test_checkpoint_roundtrip_preserves_analyzer_state(
+        self, simple_lightning_module, tmp_path
+    ):
+        """on_save_checkpoint/on_load_checkpoint persist the analyzer's step
+        counters and measure-subset RNG so a full-state resume keeps the
+        analysis schedule aligned and the sweep subset draws reproducible."""
+        from perspic.logger import logarithmic_windows
+
+        torch.manual_seed(42)
+        train_x = torch.randn(64, 10)
+        train_y = torch.randint(0, 2, (64,))
+        train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=8)
+
+        measure_x = torch.randn(16, 10)
+        measure_y = torch.randint(0, 2, (16,))
+        measure_loader = DataLoader(
+            TensorDataset(measure_x, measure_y), batch_size=4, drop_last=True
+        )
+
+        def make_model():
+            return analyzer(
+                simple_lightning_module,
+                measure_dataloader=measure_loader,
+                measure_batch_size=[4, 8],
+                measure_subset_seed=0,
+                analysis_schedule=logarithmic_windows(max_steps=16),
+                log_metrics=True,
+            )
+
+        model = make_model()
+        trainer = pl.Trainer(
+            max_steps=6,
+            accelerator="cpu",
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            logger=False,
+        )
+        trainer.fit(model, train_loader)
+
+        ckpt_path = str(tmp_path / "mid.ckpt")
+        trainer.save_checkpoint(ckpt_path)
+
+        saved = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        assert "perspic_analyzer" in saved
+        assert saved["perspic_analyzer"]["optimizer_step_count"] == 6
+        assert saved["perspic_analyzer"]["measure_gen_state"] is not None
+
+        # A fresh analyzer starts at 0; loading restores the saved counters
+        # and the measure-subset generator state.
+        fresh = make_model()
+        assert fresh._optimizer_step_count == 0
+        fresh.on_load_checkpoint(saved)
+        assert fresh._optimizer_step_count == 6
+        assert torch.equal(
+            fresh._measure_gen.get_state(),
+            saved["perspic_analyzer"]["measure_gen_state"],
+        )
+
 
 class TestSchedulerIntegration:
     """Integration tests for learning rate schedulers."""
