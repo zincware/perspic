@@ -12,6 +12,13 @@ from opacus.utils.module_utils import requires_grad, trainable_parameters
 
 from perspic.calculator.samplewise import SamplewiseCalculator
 
+# Above this many scalar output components, the exact per-sample network-gradient
+# computation (one forward/backward pass per component) is impractical; callers
+# must pass approximate_with_n instead. Comfortably above any classification-head
+# use case (e.g. CIFAR-10's 10) while still catching multi-million-component
+# outputs (e.g. a language model's seq_len * vocab_size) before they silently hang.
+_EXACT_MODE_OUTPUT_NUMEL_LIMIT = 512
+
 
 # Register BatchNorm gradient samplers for eval mode (frozen statistics)
 @register_grad_sampler(nn.BatchNorm1d)
@@ -290,6 +297,24 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             # Determine output shape (beyond batch dim)
             with torch.no_grad():
                 sample_out = model(inputs[:1])
+            output_numel = sample_out[0].numel()
+
+            # Checked before any hooks are attached: raising after
+            # _GhostNormFastGradientClipping's __init__ (which adds opacus's
+            # forward/backward hooks to `model`) would leave those hooks
+            # attached with no matching remove_hooks() call, breaking any
+            # subsequent call on the same model instance.
+            if approximate_with_n is None and output_numel > _EXACT_MODE_OUTPUT_NUMEL_LIMIT:
+                raise ValueError(
+                    f"Exact per-sample network-gradient computation requires "
+                    f"one forward/backward pass per output component "
+                    f"({output_numel:,} components for output shape "
+                    f"{tuple(sample_out.shape)}), which exceeds the "
+                    f"practical limit of {_EXACT_MODE_OUTPUT_NUMEL_LIMIT:,}. "
+                    "Pass approximate_with_n=<N> to use Hutchinson's trace "
+                    "estimator instead, which costs O(N) passes regardless "
+                    "of output size."
+                )
 
             total_sq_norms = torch.zeros(inputs.shape[0], device=inputs.device)
 
@@ -299,7 +324,10 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             )
 
             if approximate_with_n is not None:
-                # Implementation of Hutchinson's trace estimator
+                # Implementation of Hutchinson's trace estimator. The
+                # projection vector must span the FULL non-batch output shape
+                # (not just its last axis) so every output component gets an
+                # independent Rademacher draw -- see the note above.
                 # Each iteration requires a fresh forward pass because Opacus
                 # consumes activations during backward.
                 vectors = _draw_rademacher_random_vector(
@@ -321,11 +349,14 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 total_sq_norms /= approximate_with_n  # Average over projections
 
             else:
-                # Iterate over all output dimensions (flattened beyond batch dim).
-                # Non-2D outputs are reshaped to (B, -1) so indexing is uniform.
-                n_output_dims = sample_out[0].numel()
+                # Exact computation: one forward/backward pass per scalar
+                # output component. Cost is O(output_numel) -- fine for a
+                # small classification head, intractable for e.g. a
+                # (seq_len, vocab_size) language-model output (guarded above,
+                # before hooks were attached).
                 needs_reshape = sample_out.dim() != 2
-                for dim in range(n_output_dims):
+                for dim in range(output_numel):
+                    # Reset Opacus state for fresh forward/backward pass
                     _reset_opacus_state(model)
 
                     gs_model.zero_grad()
