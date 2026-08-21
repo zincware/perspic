@@ -129,3 +129,102 @@ class TestLogarithmicWindowsFunction:
             early_gap = centers[2] - centers[1]
             late_gap = centers[-1] - centers[-2]
             assert late_gap > early_gap
+
+
+class TestTargetCoverage:
+    """Test the target_coverage parameter of logarithmic_windows."""
+
+    def test_target_coverage_overrides_explicit_base_window(self):
+        """Test target_coverage ignores an explicitly passed base_window."""
+        schedule = logarithmic_windows(
+            max_steps=1000,
+            points_per_decade=10,
+            target_coverage=0.2,
+            base_window=999,
+        )
+        sizes = {len(steps) for steps in schedule.windows.values()}
+        assert sizes == {6}
+
+    def test_target_coverage_derives_expected_base_window(self):
+        """Test target_coverage derives base_window from max_steps/num_points.
+
+        num_points = int(10 * log10(1000)) + 1 == 31, so
+        base_window = max(1, round(0.2 * 1000 / 31)) == 6.
+        """
+        schedule = logarithmic_windows(
+            max_steps=1000, points_per_decade=10, target_coverage=0.2
+        )
+        sizes = {len(steps) for steps in schedule.windows.values()}
+        assert sizes == {6}
+        assert len(schedule.steps) == 121
+
+    def test_target_coverage_clamps_to_minimum_one(self):
+        """Test target_coverage clamps a sub-1 derived base_window to 1.
+
+        base_window = max(1, round(0.001 * 1000 / 31)) == max(1, 0) == 1.
+        """
+        schedule = logarithmic_windows(
+            max_steps=1000, points_per_decade=10, target_coverage=0.001
+        )
+        sizes = {len(steps) for steps in schedule.windows.values()}
+        assert sizes == {1}
+        assert len(schedule.steps) == 28
+
+    def test_target_coverage_combines_with_adaptive_scale(self):
+        """Test target_coverage's derived base grows via adaptive_scale.
+
+        Base window is 6 (as in test_target_coverage_derives_expected_base_window);
+        with adaptive_scale=2.0, window size at center=794 (the largest
+        non-truncated center) should be 6 + int(2.0 * log10(794)) == 11.
+        """
+        schedule = logarithmic_windows(
+            max_steps=1000,
+            points_per_decade=10,
+            target_coverage=0.2,
+            adaptive_scale=2.0,
+        )
+        window_id_at_794 = next(
+            wid for wid, c in schedule.window_centers.items() if c == 794
+        )
+        window_id_at_0 = next(
+            wid for wid, c in schedule.window_centers.items() if c == 0
+        )
+        assert len(schedule.windows[window_id_at_0]) == 6
+        assert len(schedule.windows[window_id_at_794]) == 11
+
+    def test_target_coverage_ignored_for_non_positive_max_steps(self):
+        """Test target_coverage has no effect when max_steps <= 0."""
+        for val in [0, -10]:
+            schedule = logarithmic_windows(max_steps=val, target_coverage=0.2)
+            assert schedule.steps == {0}
+            assert len(schedule.windows) == 1
+
+    def test_target_coverage_holds_roughly_constant_across_batch_size_sweep(self):
+        """Test target_coverage keeps realized coverage roughly constant
+        across a batch-size sweep at a fixed sample budget, unlike a fixed
+        base_window (even one picked to give a comparable measurement-count
+        regime, so the comparison isolates constancy rather than raw count).
+
+        This is the scenario target_coverage's docstring is written for: a
+        batch-size sweep at a fixed token budget, where max_steps shrinks
+        linearly with batch size.
+        """
+        budget = 1_000_000
+        batch_sizes = [8, 16, 24, 32, 40, 48, 56, 64]
+        max_steps_values = [budget // bs for bs in batch_sizes]
+
+        target_coverages = [
+            len(logarithmic_windows(max_steps=m, target_coverage=0.11).steps) / m
+            for m in max_steps_values
+        ]
+        fixed_coverages = [
+            len(logarithmic_windows(max_steps=m, base_window=128).steps) / m
+            for m in max_steps_values
+        ]
+
+        target_ratio = max(target_coverages) / min(target_coverages)
+        fixed_ratio = max(fixed_coverages) / min(fixed_coverages)
+
+        assert target_ratio < 1.5
+        assert fixed_ratio > 3
+        assert fixed_ratio > target_ratio
