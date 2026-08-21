@@ -36,7 +36,9 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
             inputs: Input tensor batch of shape (batch_size, ...).
             targets: Target tensor batch of shape (batch_size, ...).
             normalize: If True, sample-wise metrics are corrected to scale properly with
-                batch-size.
+                batch-size and sequence length. Assumes targets contain one element per
+                loss-reduction unit (class indices, not one-hot). For one-hot targets,
+                use normalize=False and normalize manually.
 
         Returns:
             Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
@@ -54,9 +56,9 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
 
         # Optionally normalize the results
         if normalize:
-            batch_size = inputs.shape[0]
-            batch_grad_norms_network /= batch_size
-            batch_grad_norms_loss *= batch_size
+            n_elements = targets.numel()
+            batch_grad_norms_network /= n_elements
+            batch_grad_norms_loss *= n_elements
 
         return {
             "batch_grad_norms_network": batch_grad_norms_network,
