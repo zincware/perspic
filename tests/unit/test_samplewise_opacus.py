@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn as nn
 
@@ -511,3 +512,184 @@ class TestApproximateWithNParameter:
             model, inputs, reduce=False, approximate_with_n=3
         )
         assert result.shape == (batch_size,)
+
+
+class Toy3DModel(nn.Module):
+    """MLP whose output is reshaped to (batch, seq_len, vocab_size).
+
+    Used to test N-D (rank > 2) output support in the per-sample gradient
+    calculators -- e.g. a causal LM's (batch, seq_len, vocab_size) logits,
+    where shape[-1] (vocab_size) and axis-1 (seq_len) are different axes,
+    unlike the 2-D (batch, num_classes) case every other model in this file
+    exercises.
+    """
+
+    def __init__(self, input_dim=10, n_hidden=10, seq_len=4, vocab_size=6):
+        super().__init__()
+        self.seq_len = seq_len
+        self.vocab_size = vocab_size
+        self.fc1 = nn.Linear(input_dim, n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc3 = nn.Linear(n_hidden, seq_len * vocab_size)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        out = self.fc3(x)
+        return out.reshape(x.shape[0], self.seq_len, self.vocab_size)
+
+
+class TestNDOutputSupport:
+    """Tests for per-sample gradient computation on non-2-D model outputs.
+
+    Regression-tests the 1-D case (already supported before the fix, via a
+    dim()==1 special case) and adds coverage for the 3-D case (broken before
+    the fix: the exact branch raised IndexError once dim >= seq_len, and the
+    approximate branch silently returned a biased estimate by reusing one
+    vocab-sized random vector across every sequence position instead of
+    drawing an independent one per (seq, vocab) component).
+    """
+
+    def test_1d_output_matches_functorch(self):
+        """A fully reduced (batch,)-shaped output (output_shape=()) must still
+        work -- this is the case the old `dim() > 1 else 1` special case
+        handled explicitly; output_numel = sample_out[0].numel() now derives
+        the same value (1) generically."""
+        torch.manual_seed(42)
+        batch_size = 8
+        model = MLP(output_dim=2, sum_output=True, n_hidden=10)
+        X = torch.randn(batch_size, 10)
+
+        with BatchStatSnapshot(model, X):
+            opacus_reduced = (
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=True
+                )
+            )
+            functorch_reduced = (
+                SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=True
+                )
+            )
+            assert torch.allclose(
+                opacus_reduced, functorch_reduced, atol=1e-4, rtol=1e-3
+            )
+
+            opacus_per_sample = (
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=False
+                )
+            )
+            functorch_per_sample = (
+                SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=False
+                )
+            )
+            assert opacus_per_sample.shape == (batch_size,)
+            assert torch.allclose(
+                opacus_per_sample, functorch_per_sample, atol=1e-4, rtol=1e-3
+            )
+
+    def test_3d_output_exact_matches_functorch(self):
+        """Exact computation (approximate_with_n=None) on a 3-D output must
+        match functorch's full-Jacobian reference -- this is what proves the
+        reshape/indexing generalization (range(output_numel), then
+        .reshape(B, -1)[:, dim]) is correct, not just crash-free. seq_len=4,
+        vocab_size=6 keeps output_numel=24, well under the exact-mode limit."""
+        torch.manual_seed(42)
+        batch_size = 5
+        model = Toy3DModel(input_dim=10, n_hidden=10, seq_len=4, vocab_size=6)
+        X = torch.randn(batch_size, 10)
+
+        with BatchStatSnapshot(model, X):
+            opacus_reduced = (
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=True
+                )
+            )
+            functorch_reduced = (
+                SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=True
+                )
+            )
+            assert torch.allclose(
+                opacus_reduced, functorch_reduced, atol=1e-4, rtol=1e-3
+            )
+
+            opacus_per_sample = (
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=False
+                )
+            )
+            functorch_per_sample = (
+                SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=False
+                )
+            )
+            assert opacus_per_sample.shape == (batch_size,)
+            assert torch.allclose(
+                opacus_per_sample, functorch_per_sample, atol=1e-4, rtol=1e-3
+            )
+
+    def test_3d_output_approximate_converges_to_exact(self):
+        """Hutchinson approximation on a 3-D output must converge to the exact
+        value as n grows -- this is the test that would have caught the
+        original bug: before the fix, both the exact branch (crash) and the
+        approximate branch (silent bias from reusing a vocab-sized vector
+        across every sequence position) were wrong, but the approximate
+        branch never raised, so only a numerical comparison against a
+        known-correct reference exposes it."""
+        torch.manual_seed(7)
+        batch_size = 6
+        model = Toy3DModel(input_dim=8, n_hidden=8, seq_len=3, vocab_size=5)
+        model.eval()
+        X = torch.randn(batch_size, 8)
+
+        with BatchStatSnapshot(model, X):
+            exact = (
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=True, approximate_with_n=None
+                )
+            )
+
+            n_values = [1, 10, 100]
+            errors = []
+            for n in n_values:
+                approx_values = []
+                for _ in range(5):
+                    approx = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                        model, X, reduce=True, approximate_with_n=n
+                    )
+                    approx_values.append(approx.item())
+                mean_approx = sum(approx_values) / len(approx_values)
+                rel_error = abs(mean_approx - exact.item()) / exact.item()
+                errors.append(rel_error)
+
+            assert errors[1] < errors[0], "Error should decrease from n=1 to n=10"
+            assert errors[2] < errors[1], "Error should decrease from n=10 to n=100"
+            assert errors[2] < 0.05, f"n=100 relative error {errors[2]:.2%} too high"
+
+    def test_exact_mode_raises_for_large_output(self):
+        """Exact mode must refuse (not silently loop for hours) once the
+        output has more scalar components than the practical per-component
+        forward/backward-pass budget -- this is the guard that replaces the
+        old silent IndexError for large N-D outputs."""
+        from perspic.calculator.samplewise_opacus import (
+            _EXACT_MODE_OUTPUT_NUMEL_LIMIT,
+        )
+
+        torch.manual_seed(42)
+        model = MLP(output_dim=_EXACT_MODE_OUTPUT_NUMEL_LIMIT + 1, n_hidden=10)
+        inputs = torch.randn(4, 10)
+
+        with BatchStatSnapshot(model, inputs):
+            with pytest.raises(ValueError, match="approximate_with_n"):
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, inputs, reduce=True, approximate_with_n=None
+                )
+
+            # The same output size must still work fine with approximate_with_n set.
+            result = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                model, inputs, reduce=True, approximate_with_n=8
+            )
+            assert isinstance(result, torch.Tensor)

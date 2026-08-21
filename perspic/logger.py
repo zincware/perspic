@@ -57,6 +57,7 @@ def logarithmic_windows(
     points_per_decade: int = 10,
     base_window: int = 5,
     adaptive_scale: float = 0.0,
+    target_coverage: Optional[float] = None,
 ) -> LogarithmicWindowSchedule:
     """Generate logarithmically spaced measurement windows.
 
@@ -69,13 +70,28 @@ def logarithmic_windows(
         points_per_decade: Number of log points per 10x increase in steps.
             Higher values give denser coverage. Default is 10.
         base_window: Minimum window size (number of consecutive measurements
-            per log point). Default is 5.
+            per log point). Default is 5. Ignored if target_coverage is set.
         adaptive_scale: Controls how window size grows with step number.
             - 0.0: Fixed window size (always base_window)
             - 1.0: Window grows by ~1 step per decade
             - 2.0: Window grows by ~2 steps per decade
             The formula is: window_size = base_window + adaptive_scale * log10(step)
             Default is 0.0 (fixed windows).
+        target_coverage: If set, overrides base_window with a value derived
+            from max_steps so that num_points * base_window / ( max_steps + 1 )
+            approximates this fraction (clamped to at least 1; the *actual*
+            coverage -- len(schedule.steps) / (max_steps + 1) -- will still differ
+            somewhat, since overlapping/truncated windows collapse below this
+            nominal estimate). Use this instead of a hand-picked base_window
+            when comparing schedules across runs whose max_steps varies for
+            reasons unrelated to how much you want measured -- e.g. a
+            batch-size sweep at a fixed token budget, where max_steps shrinks
+            linearly with batch size. With a fixed base_window, window
+            *count* (num_points above) only grows with log10(max_steps), so
+            realized coverage balloons as max_steps shrinks; deriving
+            base_window from target_coverage instead keeps it roughly
+            constant across such a sweep. None (default) preserves the
+            original fixed-base_window behavior exactly.
 
     Returns:
         LogarithmicWindowSchedule containing:
@@ -96,6 +112,12 @@ def logarithmic_windows(
             adaptive_scale=2.0
         )
 
+        # Batch-size sweep: hold ~11% coverage constant across runs whose
+        # max_steps varies with batch size, instead of a fixed base_window
+        # that would make coverage balloon as batch size grows and max_steps
+        # shrinks.
+        schedule = logarithmic_windows(max_steps=max_steps, target_coverage=0.11)
+
         # Use with analyzer
         model = analyzer(MyModule, analysis_schedule=schedule, ...)
     """
@@ -109,6 +131,10 @@ def logarithmic_windows(
     # Generate log-spaced center points in the range [10^0, 10^log10(max_steps)]
     # Step 0 will be added separately below
     num_points = int(points_per_decade * math.log10(max_steps)) + 1
+    if target_coverage is not None:
+        if not math.isfinite(target_coverage) or target_coverage <= 0:
+            raise ValueError("target_coverage must be a finite positive float")
+        base_window = max(1, round(target_coverage * (max_steps + 1) / num_points))
     # Generate logspace without numpy: 10^(start + i * step) for i in range(num_points)
     log_start, log_end = 0, math.log10(max_steps)
     log_step = (log_end - log_start) / (num_points - 1) if num_points > 1 else 0
