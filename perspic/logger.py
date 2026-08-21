@@ -78,9 +78,9 @@ def logarithmic_windows(
             The formula is: window_size = base_window + adaptive_scale * log10(step)
             Default is 0.0 (fixed windows).
         target_coverage: If set, overrides base_window with a value derived
-            from max_steps so that num_points * base_window / max_steps
+            from max_steps so that num_points * base_window / ( max_steps + 1 )
             approximates this fraction (clamped to at least 1; the *actual*
-            coverage -- len(schedule.steps) / max_steps -- will still differ
+            coverage -- len(schedule.steps) / (max_steps + 1) -- will still differ
             somewhat, since overlapping/truncated windows collapse below this
             nominal estimate). Use this instead of a hand-picked base_window
             when comparing schedules across runs whose max_steps varies for
@@ -132,7 +132,9 @@ def logarithmic_windows(
     # Step 0 will be added separately below
     num_points = int(points_per_decade * math.log10(max_steps)) + 1
     if target_coverage is not None:
-        base_window = max(1, round(target_coverage * max_steps / num_points))
+        if not math.isfinite(target_coverage) or target_coverage <= 0:
+            raise ValueError("target_coverage must be a finite positive float")
+        base_window = max(1, round(target_coverage * (max_steps + 1) / num_points))
     # Generate logspace without numpy: 10^(start + i * step) for i in range(num_points)
     log_start, log_end = 0, math.log10(max_steps)
     log_step = (log_end - log_start) / (num_points - 1) if num_points > 1 else 0
