@@ -103,6 +103,25 @@ This example is self-contained and doesn't require external data. Use it to unde
 
 ---
 
+### [target_coverage.ipynb](target_coverage.ipynb)
+**Duration**: <1 min | **GPU**: Not required
+
+**What it demonstrates**:
+- Why a fixed `base_window` in `logarithmic_windows()` makes analysis coverage balloon across a
+  batch-size sweep at a fixed token budget, and how `target_coverage` holds it roughly constant
+- How to reproduce the exact before/after coverage numbers from a real packed-corpus sweep
+- How many training tokens a single measurement window actually costs, and how that scales
+  (or doesn't) with batch size under `target_coverage` on vs. off
+
+**Key Insight**: `target_coverage` derives `base_window` from `max_steps` instead of fixing it, which
+keeps both the realized coverage *and* the token cost of one measurement roughly constant across a
+batch-size sweep -- trading window width for batch size as the budget shifts between them.
+
+This example only imports `perspic.logger`, `pandas`, and `matplotlib` -- no model, training loop, or
+GPU needed.
+
+---
+
 ### [core/hutchinson_convergence.py](core/hutchinson_convergence.py)
 **Duration**: ~2 min | **GPU**: Not required
 
@@ -155,6 +174,7 @@ examples/
 │   ├── mlps.py
 │   └── utils.py
 ├── batch_size_scaling_analysis.ipynb  # Theory + implementation
+├── target_coverage.ipynb              # target_coverage vs. fixed base_window
 ├── cifar10.ipynb                      # Core workflow
 ├── logging_scheduler.ipynb            # Efficient logging
 ├── cross10_cross_response.ipynb       # Response analysis
