@@ -112,10 +112,14 @@ This example is self-contained and doesn't require external data. Use it to unde
 - How to reproduce the exact before/after coverage numbers from a real packed-corpus sweep
 - How many training tokens a single measurement window actually costs, and how that scales
   (or doesn't) with batch size under `target_coverage` on vs. off
+- How `tokens_per_step`/`tokens_per_window` holds tokens-per-window *exactly* constant instead, by
+  deriving `base_window` straight from a token budget rather than via `max_steps`
 
 **Key Insight**: `target_coverage` derives `base_window` from `max_steps` instead of fixing it, which
 keeps both the realized coverage *and* the token cost of one measurement roughly constant across a
 batch-size sweep -- trading window width for batch size as the budget shifts between them.
+`tokens_per_step`/`tokens_per_window` goes further: it derives `base_window` directly from a token
+budget, holding tokens-per-window constant exactly (up to step rounding) rather than roughly.
 
 This example only imports `perspic.logger`, `pandas`, and `matplotlib` -- no model, training loop, or
 GPU needed.
