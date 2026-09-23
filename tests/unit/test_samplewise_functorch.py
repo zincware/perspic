@@ -326,3 +326,131 @@ class TestTraceComputation:
 
         # Sum of per-sample should equal reduced
         assert torch.allclose(loss_grad_norms_reduced, loss_grad_norms_per_sample.sum())
+
+
+class Toy3DModel(nn.Module):
+    """MLP whose output is reshaped to (batch, seq_len, vocab_size) -- see
+    the identically-named model in test_samplewise_opacus.py."""
+
+    def __init__(self, input_dim=10, n_hidden=10, seq_len=4, vocab_size=6):
+        super().__init__()
+        self.seq_len = seq_len
+        self.vocab_size = vocab_size
+        self.fc1 = nn.Linear(input_dim, n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc3 = nn.Linear(n_hidden, seq_len * vocab_size)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        out = self.fc3(x)
+        return out.reshape(x.shape[0], self.seq_len, self.vocab_size)
+
+
+class IndependentPositionModel(nn.Module):
+    """Embedding -> Linear applied per-position: output position t depends
+    ONLY on token t's own id, with no mixing across positions -- see the
+    identically-named model in test_samplewise_opacus.py for why this is
+    what makes the padded-vs-unpadded equality test below valid."""
+
+    def __init__(self, vocab_size: int, embed_dim: int, n_classes: int):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, embed_dim)
+        self.head = nn.Linear(embed_dim, n_classes)
+
+    def forward(self, x):
+        return self.head(self.embed(x))
+
+
+class TestIgnoreIndexMasking:
+    """Tests for perspic's new support for `-100`-masked targets (WS5a) on
+    the functorch backend -- mirrors test_samplewise_opacus.py's
+    TestIgnoreIndexMasking. Functorch has no approximate mode (it always
+    computes the full Jacobian via jacrev), so there is only one "exact
+    mode" style equality to check.
+    """
+
+    def test_constructor_default_ignore_index(self):
+        calc = SamplewiseCalculatorFunctorch()
+        assert calc.ignore_index == -100
+
+    def test_constructor_accepts_ignore_index_override(self):
+        calc = SamplewiseCalculatorFunctorch(ignore_index=None)
+        assert calc.ignore_index is None
+
+    def test_unmasked_batch_compute_matches_pre_feature_formula(self):
+        """No -100 anywhere in targets -> compute() must reproduce the
+        pre-feature formula (n_elements = targets.numel(), no masking
+        anywhere) exactly -- functorch has no randomness anywhere in this
+        path, so any deviation would mean the new masking logic changed
+        behavior for callers who never asked for it."""
+        torch.manual_seed(5)
+        model = Toy3DModel(input_dim=6, n_hidden=6, seq_len=3, vocab_size=4)
+        X = torch.randn(5, 6)
+        y = torch.randint(0, 4, (5, 3))  # no -100 present
+
+        def loss_fn(outputs, targets):
+            return nn.functional.cross_entropy(
+                outputs.reshape(-1, outputs.shape[-1]),
+                targets.reshape(-1),
+                reduction="sum",
+            )
+
+        pre_feature_net = (
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                model, X, reduce=True
+            )
+        )
+        pre_feature_loss = (
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_loss(
+                model, loss_fn, X, y, reduce=True
+            )
+        )
+        n_elements_old = y.numel()
+        expected_net = pre_feature_net / n_elements_old
+        expected_loss = pre_feature_loss * n_elements_old
+
+        calc = SamplewiseCalculatorFunctorch()  # default ignore_index=-100
+        result = calc.compute(model, loss_fn, X, y, normalize=True)
+
+        assert torch.equal(result["batch_grad_norms_network"], expected_net)
+        assert torch.equal(result["batch_grad_norms_loss"], expected_loss)
+
+    def test_padded_masked_matches_unpadded_per_sample(self):
+        """V=5, T=4: a padded-and-masked batch's per-sample chi_net values
+        must equal the values computed by running each sample's own
+        (shorter, unpadded) sequence through the model individually."""
+        torch.manual_seed(11)
+        vocab_size, embed_dim, n_classes, seq_len = 5, 4, 5, 4
+        model = IndependentPositionModel(vocab_size, embed_dim, n_classes)
+
+        real_lens = [2, 3]
+        x_padded = torch.randint(0, vocab_size, (2, seq_len))
+        y_padded = torch.full((2, seq_len), -100, dtype=torch.long)
+        for i, rl in enumerate(real_lens):
+            y_padded[i, :rl] = torch.randint(0, n_classes, (rl,))
+
+        mask, n_elements = SamplewiseCalculatorFunctorch.resolve_target_mask(
+            y_padded, ignore_index=-100
+        )
+        assert mask is not None
+        assert n_elements.item() == sum(real_lens)
+
+        padded_per_sample = (
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                model, x_padded, reduce=False, mask=mask
+            )
+        )
+
+        unpadded_per_sample = torch.stack(
+            [
+                SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                    model, x_padded[i, :rl].unsqueeze(0), reduce=True
+                )
+                for i, rl in enumerate(real_lens)
+            ]
+        )
+
+        assert torch.allclose(
+            padded_per_sample, unpadded_per_sample, atol=1e-5, rtol=1e-4
+        )
