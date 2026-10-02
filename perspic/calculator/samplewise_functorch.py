@@ -1,4 +1,4 @@
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
 import torch
 import torch.func as func
@@ -13,11 +13,29 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
     This implementation uses PyTorch's functorch (torch.func) for efficient
     per-sample gradient computation via vectorized Jacobian calculations.
 
+    Args:
+        ignore_index: Target value marking a position that contributes no loss
+            and should be excluded from both the network-gradient projection
+            and the `n_elements` normalization -- mirrors
+            `nn.CrossEntropyLoss`'s `ignore_index`. Defaults to -100. Pass
+            `None` to disable masking entirely (e.g. if -100 is a legitimate
+            target value in your data). Masking only activates when `targets`
+            is integer-typed and actually contains `ignore_index`; an
+            unmasked batch's computation is bitwise identical to before this
+            parameter existed. Targets must line up with the model output's
+            leading axes ((B, T) vs (B, T, V); (B, V, T) is not supported),
+            and criteria that shift labels internally (HF-style causal LM)
+            must be given already-shifted targets, otherwise the mask is off
+            by one. See `SamplewiseCalculator.resolve_target_mask`.
+
     Note:
         For models with BatchNorm, wrap calls with `BatchStatSnapshot` context
         manager to freeze running statistics for correct sample-wise
         gradient computation.
     """
+
+    def __init__(self, ignore_index: int | None = -100):
+        self.ignore_index = ignore_index
 
     def compute(
         self,
@@ -43,9 +61,12 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
         Returns:
             Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
         """
+        mask, n_elements = SamplewiseCalculatorFunctorch.resolve_target_mask(
+            targets, self.ignore_index
+        )
         batch_grad_norms_network = (
             SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
-                model, inputs
+                model, inputs, mask=mask
             )
         )
         batch_grad_norms_loss = (
@@ -56,7 +77,6 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
 
         # Optionally normalize the results
         if normalize:
-            n_elements = targets.numel()
             batch_grad_norms_network /= n_elements
             batch_grad_norms_loss *= n_elements
 
@@ -94,7 +114,10 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
 
     @staticmethod
     def _compute_per_sample_gradient_norm_network(
-        model: nn.Module, inputs: torch.Tensor, reduce: bool = True
+        model: nn.Module,
+        inputs: torch.Tensor,
+        reduce: bool = True,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute per-sample gradient norms for network parameters (∇_θ f).
 
@@ -102,6 +125,13 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
             model: The neural network model.
             inputs: Input tensor batch of shape (batch_size, ...).
             reduce: If True, sum over batch. If False, return per-sample norms.
+            mask: Optional boolean tensor shaped like a label tensor (e.g.
+                (batch, seq_len)), True at output positions to include in the
+                projection. Positions where mask is False contribute zero to
+                every sample's squared gradient norm -- see
+                `SamplewiseCalculator.resolve_target_mask`/`broadcast_mask`.
+                `None` (the default) computes over every output position,
+                exactly as before this parameter existed.
 
         Returns:
             If reduce=True: Scalar (sum of squared gradient norms).
@@ -124,9 +154,31 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
             assert v.shape[0] == inputs.shape[0]
             # Assert that the v.shape[1:] matches the shape of the parameter
             assert v.shape[-len(params[k].shape) :] == params[k].shape
+
+        # `mask` is shaped like the label tensor (e.g. (B, T)), but each `g`
+        # here carries the extra size-1 axis `inputs.unsqueeze(1)` introduced
+        # above (jacrev differentiates the model's full output, "fake batch
+        # of 1" included), ahead of the output-shape and parameter-shape
+        # axes -- so unsqueeze at position 1 to line the mask up with that
+        # axis before appending the trailing (output tail + parameter) axes
+        # broadcast_mask adds. None (no `-100` in this batch, or masking
+        # disabled) skips this and every op below is unchanged from before
+        # this parameter existed.
+        mask_for_grads = mask.unsqueeze(1) if mask is not None else None
+
         # Compute per-sample gradient magnitude (L2 norm)
         per_sample_grad_magnitudes = torch.stack(
-            [(g**2).sum(dim=tuple(range(1, g.ndim))) for g in per_sample_grads.values()]
+            [
+                (
+                    g**2
+                    * SamplewiseCalculatorFunctorch.broadcast_mask(
+                        mask_for_grads, g.dim()
+                    ).to(dtype=g.dtype)
+                    if mask_for_grads is not None
+                    else g**2
+                ).sum(dim=tuple(range(1, g.ndim)))
+                for g in per_sample_grads.values()
+            ]
         ).sum(
             dim=0
         )  # Sum across parameters

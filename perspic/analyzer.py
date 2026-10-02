@@ -11,6 +11,9 @@ from perspic.calculator.samplewise_opacus import SamplewiseCalculatorOpacus
 from perspic.logger import LogarithmicWindowSchedule
 from perspic.utils import BatchStatSnapshot
 
+# Sentinel meaning "take ignore_index from the wrapped module's criterion".
+_FROM_CRITERION = object()
+
 
 def analyzer(
     lightning_module: pl.LightningModule,
@@ -22,6 +25,7 @@ def analyzer(
     analyze_every: Optional[int] = None,
     analysis_schedule: Optional[LogarithmicWindowSchedule] = None,
     cross_response: bool = False,
+    ignore_index: Optional[int] = _FROM_CRITERION,
     **model_kwargs,
 ):
     """Factory function that wraps a LightningModule with analysis capabilities.
@@ -55,6 +59,19 @@ def analyzer(
         cross_response: If True, enables cross-batch response analysis and assumes
             the training batch is a dict with 'train' and 'measure' keys.
             Defaults to False.
+        ignore_index: Target value marking positions that contribute no loss
+            (e.g. padding), forwarded to the sample-wise calculators so masked
+            positions are excluded from the ``chi_net`` projection and the
+            element count. By default it is read from the wrapped module's
+            ``criterion.ignore_index`` (falling back to -100, the
+            ``nn.CrossEntropyLoss`` convention, if the criterion has none). An
+            explicit int overrides the criterion; None disables masking
+            (the behaviour before ignore_index support existed).
+            Targets passed to the criterion must line up with the logits'
+            leading axes (e.g. (B, T) targets vs (B, T, V) logits). A criterion
+            that shifts labels internally (HF-style causal LM, ``logits[:, :-1]``
+            vs ``labels[:, 1:]``) must be given already-shifted targets by the
+            time perspic sees them, otherwise the mask is off by one position.
         **model_kwargs: Additional keyword arguments passed to the
             LightningModule constructor.
 
@@ -117,6 +134,7 @@ def analyzer(
             analyze_every=analyze_every,
             analysis_schedule=analysis_schedule,
             cross_response=cross_response,
+            ignore_index=ignore_index,
             **model_kwargs,
         ):
             super().__init__(**model_kwargs)
@@ -145,11 +163,21 @@ def analyzer(
             if analyze_every is not None and analyze_every < 1:
                 raise ValueError("analyze_every must be a positive integer")
 
+            # The criterion only exists once the wrapped __init__ has run.
+            if ignore_index is _FROM_CRITERION:
+                ignore_index = getattr(
+                    getattr(self, "criterion", None), "ignore_index", -100
+                )
+
             if sample_wise_engine == "functorch":
-                self.sample_calc = SamplewiseCalculatorFunctorch()
+                self.sample_calc = SamplewiseCalculatorFunctorch(
+                    ignore_index=ignore_index
+                )
             elif sample_wise_engine == "opacus":
                 self.sample_calc = SamplewiseCalculatorOpacus(
-                    strict=opacus_strict, approximate_with_n=opacus_approximate_with_n
+                    strict=opacus_strict,
+                    approximate_with_n=opacus_approximate_with_n,
+                    ignore_index=ignore_index,
                 )
 
             # Initialize the linearizer
@@ -443,5 +471,6 @@ def analyzer(
         analyze_every=analyze_every,
         analysis_schedule=analysis_schedule,
         cross_response=cross_response,
+        ignore_index=ignore_index,
         **model_kwargs,
     )

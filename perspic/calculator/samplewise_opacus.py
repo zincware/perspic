@@ -1,6 +1,6 @@
 """Sample-wise gradient norm calculator using Opacus with ghost clipping."""
 
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -194,15 +194,34 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             random projections instead of iterating over all output dimensions.
             This provides a faster but approximate computation. Defaults to None
             (exact computation).
+        ignore_index: Target value marking a position that contributes no loss
+            and should be excluded from both the network-gradient projection
+            and the `n_elements` normalization -- mirrors
+            `nn.CrossEntropyLoss`'s `ignore_index`. Defaults to -100. Pass
+            `None` to disable masking entirely (e.g. if -100 is a legitimate
+            target value in your data). Masking only activates when `targets`
+            is integer-typed and actually contains `ignore_index`; an
+            unmasked batch's computation is bitwise identical to before this
+            parameter existed. Targets must line up with the model output's
+            leading axes ((B, T) vs (B, T, V); (B, V, T) is not supported),
+            and criteria that shift labels internally (HF-style causal LM)
+            must be given already-shifted targets, otherwise the mask is off
+            by one. See `SamplewiseCalculator.resolve_target_mask`.
 
     Note:
         For models with BatchNorm, wrap calls with `BatchStatSnapshot` context
         manager to freeze running statistics, similar to the functorch calculator.
     """
 
-    def __init__(self, strict: bool = False, approximate_with_n: int | None = None):
+    def __init__(
+        self,
+        strict: bool = False,
+        approximate_with_n: int | None = None,
+        ignore_index: int | None = -100,
+    ):
         self.strict = strict
         self.approximate_with_n = approximate_with_n
+        self.ignore_index = ignore_index
 
     def compute(
         self,
@@ -228,12 +247,16 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         Returns:
             Dictionary with 'batch_grad_norms_network' and 'batch_grad_norms_loss'.
         """
+        mask, n_elements = SamplewiseCalculatorOpacus.resolve_target_mask(
+            targets, self.ignore_index
+        )
         batch_grad_norms_network = (
             SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
                 model,
                 inputs,
                 strict=self.strict,
                 approximate_with_n=self.approximate_with_n,
+                mask=mask,
             )
         )
         batch_grad_norms_loss = (
@@ -244,7 +267,6 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
         # Optionally normalize the results
         if normalize:
-            n_elements = targets.numel()
             batch_grad_norms_network /= n_elements
             batch_grad_norms_loss *= n_elements
 
@@ -261,6 +283,7 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
         reduce: bool = True,
         strict: bool = False,
         approximate_with_n: int | None = None,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute per-sample gradient norms for network parameters (∇_θ f).
 
@@ -276,6 +299,13 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
             approximate_with_n: If not None, the sample-wise gradients will not be
                 computed for each output dimension. Instead, we will apply n
                 low-dimensional projections to estimate the sum of output dimensions.
+            mask: Optional boolean tensor shaped like a label tensor (e.g.
+                (batch, seq_len)), True at output positions to include in the
+                projection. Positions where mask is False contribute zero to
+                every sample's squared gradient norm -- see
+                `SamplewiseCalculator.resolve_target_mask`/`broadcast_mask`.
+                `None` (the default) computes over every output position,
+                exactly as before this parameter existed.
 
         Returns:
             If reduce=True: Scalar (sum of squared gradient norms).
@@ -298,6 +328,18 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 model, strict=strict, loss_reduction="sum"
             )
 
+            # Mask is resolved once, outside both loops -- it doesn't change
+            # per-iteration, and (per resolve_target_mask's contract) is None
+            # whenever no position actually needs masking, so the `out * mask`
+            # multiply below is skipped entirely and every op that follows
+            # (including the Rademacher draws) is byte-for-byte the same
+            # sequence of operations as before this parameter existed.
+            mask_full = None
+            if mask is not None:
+                mask_full = SamplewiseCalculatorOpacus.broadcast_mask(
+                    mask, sample_out.dim()
+                ).to(dtype=sample_out.dtype)
+
             if approximate_with_n is not None:
                 # Implementation of Hutchinson's trace estimator
                 # Each iteration requires a fresh forward pass because Opacus
@@ -313,7 +355,10 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
 
                     gs_model.zero_grad()
                     out = gs_model(inputs)
-                    projected = (out * v).sum()
+                    if mask_full is not None:
+                        projected = (out * v * mask_full).sum()
+                    else:
+                        projected = (out * v).sum()
                     projected.backward()
 
                     total_sq_norms += gs_model.get_norm_sample() ** 2
@@ -325,6 +370,21 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                 # Non-2D outputs are reshaped to (B, -1) so indexing is uniform.
                 n_output_dims = sample_out[0].numel()
                 needs_reshape = sample_out.dim() != 2
+                # Flatten the mask the same way `out` is about to be
+                # flattened, so `mask_flat[:, dim]` lines up with
+                # `out[:, dim]`. Note: `sample_out` was computed on
+                # `inputs[:1]` (batch size 1, purely for shape probing), while
+                # `mask_full`'s batch axis is the real batch size -- expand
+                # against `inputs.shape[0]` + the rest of `sample_out`'s
+                # shape, never against `sample_out` itself. This is a view,
+                # not a copy, until reshape needs one, since a size-1 axis
+                # can't itself be reshaped into the vocab/class axis's size.
+                mask_flat = None
+                if mask_full is not None:
+                    full_batch_shape = (inputs.shape[0], *sample_out.shape[1:])
+                    mask_flat = mask_full.expand(full_batch_shape)
+                    if needs_reshape:
+                        mask_flat = mask_flat.reshape(mask_flat.shape[0], -1)
                 for dim in range(n_output_dims):
                     _reset_opacus_state(model)
 
@@ -332,6 +392,8 @@ class SamplewiseCalculatorOpacus(SamplewiseCalculator):
                     out = gs_model(inputs)
                     if needs_reshape:
                         out = out.reshape(out.shape[0], -1)
+                    if mask_flat is not None:
+                        out = out * mask_flat
                     out[:, dim].sum().backward()
 
                     total_sq_norms += gs_model.get_norm_sample() ** 2

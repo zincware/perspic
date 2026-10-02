@@ -511,3 +511,291 @@ class TestApproximateWithNParameter:
             model, inputs, reduce=False, approximate_with_n=3
         )
         assert result.shape == (batch_size,)
+
+
+class Toy3DModel(nn.Module):
+    """MLP whose output is reshaped to (batch, seq_len, vocab_size).
+
+    Used to test N-D (rank > 2) output support in the per-sample gradient
+    calculators -- e.g. a causal LM's (batch, seq_len, vocab_size) logits,
+    where shape[-1] (vocab_size) and axis-1 (seq_len) are different axes,
+    unlike the 2-D (batch, num_classes) case every other model in this file
+    exercises.
+    """
+
+    def __init__(self, input_dim=10, n_hidden=10, seq_len=4, vocab_size=6):
+        super().__init__()
+        self.seq_len = seq_len
+        self.vocab_size = vocab_size
+        self.fc1 = nn.Linear(input_dim, n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc3 = nn.Linear(n_hidden, seq_len * vocab_size)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        out = self.fc3(x)
+        return out.reshape(x.shape[0], self.seq_len, self.vocab_size)
+
+
+class IndependentPositionModel(nn.Module):
+    """Embedding -> Linear applied per-position: output position t depends
+    ONLY on token t's own id, with no mixing across positions (unlike
+    Toy3DModel above, whose fully-connected layers mix every input feature
+    into every output position). That independence is what makes right-
+    padding safe to test against truncated unpadded sequences below --
+    masking out a padded position cannot leak into any real position's
+    gradient, because there is no path for it to leak through.
+    """
+
+    def __init__(self, vocab_size: int, embed_dim: int, n_classes: int):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, embed_dim)
+        self.head = nn.Linear(embed_dim, n_classes)
+
+    def forward(self, x):
+        return self.head(self.embed(x))
+
+
+class TestIgnoreIndexMasking:
+    """Tests for perspic's new support for `-100`-masked targets (WS5a).
+
+    perspic previously had no concept of `ignore_index`: the chi_net
+    Hutchinson/exact projection ran over the whole output including padded
+    positions, and `n_elements = targets.numel()` counted them too. These
+    tests cover the two correctness properties the fix must have: (a) a
+    batch with no masked targets must be untouched -- bitwise identical to
+    the pre-feature computation; (b) a padded-and-masked batch's per-sample
+    values must equal the per-sample values computed on the corresponding
+    unpadded (shorter) sequences.
+    """
+
+    def test_constructor_default_ignore_index(self):
+        calc = SamplewiseCalculatorOpacus()
+        assert calc.ignore_index == -100
+
+    def test_constructor_accepts_ignore_index_override(self):
+        calc = SamplewiseCalculatorOpacus(ignore_index=None)
+        assert calc.ignore_index is None
+
+    def test_unmasked_batch_compute_matches_pre_feature_formula(self):
+        """No -100 anywhere in targets -> compute() must reproduce the
+        pre-feature formula (n_elements = targets.numel(), no masking
+        anywhere) exactly, not just approximately. Both computations reuse
+        the same model/inputs and exact mode has no randomness, so any
+        deviation would mean the new masking logic changed behavior for
+        callers who never asked for it."""
+        torch.manual_seed(5)
+        model = Toy3DModel(input_dim=6, n_hidden=6, seq_len=3, vocab_size=4)
+        X = torch.randn(5, 6)
+        y = torch.randint(0, 4, (5, 3))  # no -100 present
+
+        def loss_fn(outputs, targets):
+            return nn.functional.cross_entropy(
+                outputs.reshape(-1, outputs.shape[-1]),
+                targets.reshape(-1),
+                reduction="sum",
+            )
+
+        with BatchStatSnapshot(model, X):
+            pre_feature_net = (
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, X, reduce=True
+                )
+            )
+            pre_feature_loss = (
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_loss(
+                    model, loss_fn, X, y, reduce=True
+                )
+            )
+        n_elements_old = y.numel()
+        expected_net = pre_feature_net / n_elements_old
+        expected_loss = pre_feature_loss * n_elements_old
+
+        with BatchStatSnapshot(model, X):
+            calc = SamplewiseCalculatorOpacus()  # default ignore_index=-100
+            result = calc.compute(model, loss_fn, X, y, normalize=True)
+
+        assert torch.equal(result["batch_grad_norms_network"], expected_net)
+        assert torch.equal(result["batch_grad_norms_loss"], expected_loss)
+
+    def test_exact_mode_padded_masked_matches_unpadded_per_sample(self):
+        """V=5, T=4: a padded-and-masked batch's per-sample chi_net values
+        must equal the values computed by running each sample's own
+        (shorter, unpadded) sequence through the model individually. This is
+        the equality the whole feature exists to guarantee."""
+        torch.manual_seed(11)
+        vocab_size, embed_dim, n_classes, seq_len = 5, 4, 5, 4
+        model = IndependentPositionModel(vocab_size, embed_dim, n_classes)
+
+        real_lens = [2, 3]
+        x_padded = torch.randint(0, vocab_size, (2, seq_len))
+        y_padded = torch.full((2, seq_len), -100, dtype=torch.long)
+        for i, rl in enumerate(real_lens):
+            y_padded[i, :rl] = torch.randint(0, n_classes, (rl,))
+
+        mask, n_elements = SamplewiseCalculatorOpacus.resolve_target_mask(
+            y_padded, ignore_index=-100
+        )
+        assert mask is not None
+        assert n_elements.item() == sum(real_lens)
+
+        padded_per_sample = (
+            SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                model, x_padded, reduce=False, mask=mask
+            )
+        )
+
+        unpadded_per_sample = torch.stack(
+            [
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, x_padded[i, :rl].unsqueeze(0), reduce=True
+                )
+                for i, rl in enumerate(real_lens)
+            ]
+        )
+
+        assert torch.allclose(
+            padded_per_sample, unpadded_per_sample, atol=1e-5, rtol=1e-4
+        )
+
+    def test_approximate_mode_padded_masked_converges_to_unpadded(self):
+        """Same equality as the exact-mode test above, but through the
+        Hutchinson approximate path (what every real llama run actually
+        uses, since a language-model output is far too large for exact
+        mode) -- averaged over enough draws to beat the estimator's own
+        variance."""
+        torch.manual_seed(13)
+        vocab_size, embed_dim, n_classes, seq_len = 6, 5, 6, 5
+        model = IndependentPositionModel(vocab_size, embed_dim, n_classes)
+
+        real_lens = [2, 4]
+        x_padded = torch.randint(0, vocab_size, (2, seq_len))
+        y_padded = torch.full((2, seq_len), -100, dtype=torch.long)
+        for i, rl in enumerate(real_lens):
+            y_padded[i, :rl] = torch.randint(0, n_classes, (rl,))
+
+        mask, _ = SamplewiseCalculatorOpacus.resolve_target_mask(
+            y_padded, ignore_index=-100
+        )
+
+        exact_unpadded = torch.stack(
+            [
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, x_padded[i, :rl].unsqueeze(0), reduce=True
+                )
+                for i, rl in enumerate(real_lens)
+            ]
+        )
+
+        approx_runs = torch.stack(
+            [
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, x_padded, reduce=False, mask=mask, approximate_with_n=200
+                )
+                for _ in range(8)
+            ]
+        )
+        approx_mean = approx_runs.mean(dim=0)
+
+        rel_error = (approx_mean - exact_unpadded).abs() / exact_unpadded.abs()
+        assert torch.all(rel_error < 0.15)
+
+    @staticmethod
+    def _masked_batch():
+        """Right-padded (B=3, T=5) batch with real lengths [2, 5, 3]."""
+        torch.manual_seed(21)
+        vocab_size, embed_dim, n_classes, seq_len = 6, 4, 6, 5
+        model = IndependentPositionModel(vocab_size, embed_dim, n_classes)
+        real_lens = [2, 5, 3]
+        x = torch.randint(0, vocab_size, (3, seq_len))
+        y = torch.full((3, seq_len), -100, dtype=torch.long)
+        for i, rl in enumerate(real_lens):
+            y[i, :rl] = torch.randint(0, n_classes, (rl,))
+        criterion = nn.CrossEntropyLoss(ignore_index=-100)  # mean reduction
+
+        def loss_fn(outputs, targets):
+            return criterion(
+                outputs.reshape(-1, outputs.shape[-1]), targets.reshape(-1)
+            )
+
+        return model, x, y, real_lens, loss_fn
+
+    def test_compute_masked_batch_matches_unpadded_ground_truth(self):
+        """compute() on a right-padded, -100-masked batch (mean-reduction
+        CrossEntropyLoss) must equal ground truth built from unpadded data.
+
+        compute() returns batch-summed values. With N real tokens:
+        network = sum_i ||grad f(x_i[:len_i])||^2 / N (masked positions
+        contribute nothing, so each unpadded sequence's norm is the target),
+        loss = N * sum_b ||dL/dlogits_b||^2, where L is the full masked mean
+        loss and dL/dlogits is zero at ignored positions.
+        """
+        model, x, y, real_lens, loss_fn = self._masked_batch()
+        n_real = sum(real_lens)
+
+        expected_net = (
+            sum(
+                SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+                    model, x[i, :rl].unsqueeze(0), reduce=True
+                )
+                for i, rl in enumerate(real_lens)
+            )
+            / n_real
+        )
+
+        logits = model(x).detach().requires_grad_(True)
+        (dlogits,) = torch.autograd.grad(loss_fn(logits, y), logits)
+        pad_mask = torch.arange(x.shape[1])[None, :] < torch.tensor(real_lens)[:, None]
+        assert torch.all(dlogits[~pad_mask] == 0)
+        expected_loss = (dlogits[pad_mask] ** 2).sum() * n_real
+
+        result = SamplewiseCalculatorOpacus().compute(
+            model, loss_fn, x, y, normalize=True
+        )
+
+        assert torch.allclose(
+            result["batch_grad_norms_network"], expected_net, atol=1e-6, rtol=1e-4
+        )
+        assert torch.allclose(
+            result["batch_grad_norms_loss"], expected_loss, atol=1e-6, rtol=1e-4
+        )
+
+    def test_classification_ignored_samples_have_zero_network_norm(self):
+        """(B,) targets with some -100 and (B, C) output: ignored samples get
+        exactly zero per-sample network norm; the rest match the unmasked
+        per-sample values."""
+        torch.manual_seed(31)
+        model = MLP(output_dim=5)
+        X = torch.randn(6, 10)
+        y = torch.randint(0, 5, (6,))
+        y[[1, 4]] = -100
+
+        mask, n_elements = SamplewiseCalculatorOpacus.resolve_target_mask(
+            y, ignore_index=-100
+        )
+        assert mask is not None
+        assert n_elements.item() == 4
+
+        masked = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+            model, X, reduce=False, mask=mask
+        )
+        unmasked = SamplewiseCalculatorOpacus._compute_per_sample_gradient_norm_network(
+            model, X, reduce=False
+        )
+
+        assert torch.equal(masked[~mask], torch.zeros(2))
+        assert torch.allclose(masked[mask], unmasked[mask], atol=1e-6, rtol=1e-4)
+
+    def test_backends_agree_on_masked_batch(self):
+        """Exact-mode Opacus and functorch compute() must agree on a masked
+        batch for both keys."""
+        model, x, y, _, loss_fn = self._masked_batch()
+
+        opacus_result = SamplewiseCalculatorOpacus().compute(model, loss_fn, x, y)
+        functorch_result = SamplewiseCalculatorFunctorch().compute(model, loss_fn, x, y)
+
+        for key in ("batch_grad_norms_network", "batch_grad_norms_loss"):
+            assert torch.allclose(
+                opacus_result[key], functorch_result[key], atol=1e-6, rtol=1e-4
+            ), key
