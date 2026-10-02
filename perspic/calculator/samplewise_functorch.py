@@ -22,7 +22,11 @@ class SamplewiseCalculatorFunctorch(SamplewiseCalculator):
             target value in your data). Masking only activates when `targets`
             is integer-typed and actually contains `ignore_index`; an
             unmasked batch's computation is bitwise identical to before this
-            parameter existed. See `SamplewiseCalculator.resolve_target_mask`.
+            parameter existed. Targets must line up with the model output's
+            leading axes ((B, T) vs (B, T, V); (B, V, T) is not supported),
+            and criteria that shift labels internally (HF-style causal LM)
+            must be given already-shifted targets, otherwise the mask is off
+            by one. See `SamplewiseCalculator.resolve_target_mask`.
 
     Note:
         For models with BatchNorm, wrap calls with `BatchStatSnapshot` context

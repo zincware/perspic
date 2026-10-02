@@ -233,6 +233,24 @@ class TestResolveTargetMask:
         assert torch.equal(mask, torch.tensor([True, True, False, True]))
         assert n_elements.item() == 3
 
+    def test_all_ignored_batch_warns(self):
+        """A batch where every position is ignore_index has no real
+        positions: warn, but leave the return values unchanged."""
+        targets = torch.full((2, 3), -100)
+        with pytest.warns(UserWarning, match="ignore_index=-100"):
+            mask, n_elements = SamplewiseCalculator.resolve_target_mask(
+                targets, ignore_index=-100
+            )
+        assert mask is not None
+        assert not mask.any()
+        assert n_elements.item() == 0
+
+    def test_partially_ignored_batch_does_not_warn(self):
+        targets = torch.tensor([[-100, -100], [1, -100]])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            SamplewiseCalculator.resolve_target_mask(targets, ignore_index=-100)
+
 
 class TestBroadcastMask:
     """Tests for `SamplewiseCalculator.broadcast_mask`."""

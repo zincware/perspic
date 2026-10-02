@@ -454,3 +454,93 @@ class TestIgnoreIndexMasking:
         assert torch.allclose(
             padded_per_sample, unpadded_per_sample, atol=1e-5, rtol=1e-4
         )
+
+    @staticmethod
+    def _masked_batch():
+        """Right-padded (B=3, T=5) batch with real lengths [2, 5, 3]."""
+        torch.manual_seed(21)
+        vocab_size, embed_dim, n_classes, seq_len = 6, 4, 6, 5
+        model = IndependentPositionModel(vocab_size, embed_dim, n_classes)
+        real_lens = [2, 5, 3]
+        x = torch.randint(0, vocab_size, (3, seq_len))
+        y = torch.full((3, seq_len), -100, dtype=torch.long)
+        for i, rl in enumerate(real_lens):
+            y[i, :rl] = torch.randint(0, n_classes, (rl,))
+        criterion = nn.CrossEntropyLoss(ignore_index=-100)  # mean reduction
+
+        def loss_fn(outputs, targets):
+            return criterion(
+                outputs.reshape(-1, outputs.shape[-1]), targets.reshape(-1)
+            )
+
+        return model, x, y, real_lens, loss_fn
+
+    def test_compute_masked_batch_matches_unpadded_ground_truth(self):
+        """compute() on a right-padded, -100-masked batch (mean-reduction
+        CrossEntropyLoss) must equal ground truth built from unpadded data.
+
+        compute() returns batch-summed values. With N real tokens:
+        network = sum_i ||grad f(x_i[:len_i])||^2 / N (masked positions
+        contribute nothing, so each unpadded sequence's norm is the target),
+        loss = N * sum_b ||dL/dlogits_b||^2, where L is the full masked mean
+        loss and dL/dlogits is zero at ignored positions.
+        """
+        model, x, y, real_lens, loss_fn = self._masked_batch()
+        n_real = sum(real_lens)
+
+        expected_net = (
+            sum(
+                SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                    model, x[i, :rl].unsqueeze(0), reduce=True
+                )
+                for i, rl in enumerate(real_lens)
+            )
+            / n_real
+        )
+
+        logits = model(x).detach().requires_grad_(True)
+        (dlogits,) = torch.autograd.grad(loss_fn(logits, y), logits)
+        pad_mask = torch.arange(x.shape[1])[None, :] < torch.tensor(real_lens)[:, None]
+        assert torch.all(dlogits[~pad_mask] == 0)
+        expected_loss = (dlogits[pad_mask] ** 2).sum() * n_real
+
+        result = SamplewiseCalculatorFunctorch().compute(
+            model, loss_fn, x, y, normalize=True
+        )
+
+        assert torch.allclose(
+            result["batch_grad_norms_network"], expected_net, atol=1e-6, rtol=1e-4
+        )
+        assert torch.allclose(
+            result["batch_grad_norms_loss"], expected_loss, atol=1e-6, rtol=1e-4
+        )
+
+    def test_classification_ignored_samples_have_zero_network_norm(self):
+        """(B,) targets with some -100 and (B, C) output: ignored samples get
+        exactly zero per-sample network norm; the rest match the unmasked
+        per-sample values."""
+        torch.manual_seed(31)
+        model = MLP(output_dim=5)
+        X = torch.randn(6, 10)
+        y = torch.randint(0, 5, (6,))
+        y[[1, 4]] = -100
+
+        mask, n_elements = SamplewiseCalculatorFunctorch.resolve_target_mask(
+            y, ignore_index=-100
+        )
+        assert mask is not None
+        assert n_elements.item() == 4
+
+        masked = (
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                model, X, reduce=False, mask=mask
+            )
+        )
+        unmasked = (
+            SamplewiseCalculatorFunctorch._compute_per_sample_gradient_norm_network(
+                model, X, reduce=False
+            )
+        )
+
+        assert torch.equal(masked[~mask], torch.zeros(2))
+        assert torch.allclose(masked[mask], unmasked[mask], atol=1e-6, rtol=1e-4)

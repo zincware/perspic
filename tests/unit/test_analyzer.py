@@ -170,6 +170,87 @@ class TestAnalyzerFactoryFunction:
         assert model.log_metrics is False
 
 
+def _make_module_with_criterion(criterion, init_log=None):
+    """Create a minimal LightningModule using the given criterion."""
+
+    class CriterionModule(pl.LightningModule):
+        def __init__(self, **kwargs):
+            super().__init__()
+            if init_log is not None:
+                init_log.update(kwargs)
+            self.model = nn.Linear(10, 2)
+            self.criterion = criterion
+
+        def forward(self, x):
+            return self.model(x)
+
+        def training_step(self, batch, batch_idx):
+            x, y = batch
+            return self.criterion(self(x), y)
+
+        def configure_optimizers(self):
+            return torch.optim.Adam(self.parameters(), lr=0.001)
+
+    return CriterionModule
+
+
+class TestAnalyzerIgnoreIndex:
+    """Test resolution and forwarding of the ignore_index option."""
+
+    @pytest.mark.parametrize("engine", ["opacus", "functorch"])
+    def test_taken_from_criterion(self, engine):
+        """ignore_index defaults to the criterion's ignore_index."""
+        module = _make_module_with_criterion(nn.CrossEntropyLoss(ignore_index=0))
+        model = analyzer(module, sample_wise_engine=engine)
+
+        assert model.sample_calc.ignore_index == 0
+
+    @pytest.mark.parametrize("engine", ["opacus", "functorch"])
+    def test_default_without_criterion_attribute(self, engine):
+        """A criterion without ignore_index falls back to -100."""
+        module = _make_module_with_criterion(nn.MSELoss())
+        model = analyzer(module, sample_wise_engine=engine)
+
+        assert model.sample_calc.ignore_index == -100
+
+    @pytest.mark.parametrize("engine", ["opacus", "functorch"])
+    def test_explicit_value_overrides_criterion(self, engine):
+        """An explicit int takes precedence over the criterion."""
+        module = _make_module_with_criterion(nn.CrossEntropyLoss(ignore_index=0))
+        model = analyzer(module, sample_wise_engine=engine, ignore_index=5)
+
+        assert model.sample_calc.ignore_index == 5
+
+    @pytest.mark.parametrize("engine", ["opacus", "functorch"])
+    def test_explicit_none_disables_masking(self, engine):
+        """An explicit None disables masking even if the criterion has one."""
+        module = _make_module_with_criterion(nn.CrossEntropyLoss(ignore_index=0))
+        model = analyzer(module, sample_wise_engine=engine, ignore_index=None)
+
+        assert model.sample_calc.ignore_index is None
+
+    def test_both_engines_receive_value(self):
+        """Both engines get a calculator of the right type with the value."""
+        module = _make_module_with_criterion(nn.CrossEntropyLoss(ignore_index=3))
+
+        opacus_model = analyzer(module, sample_wise_engine="opacus")
+        functorch_model = analyzer(module, sample_wise_engine="functorch")
+
+        assert isinstance(opacus_model.sample_calc, SamplewiseCalculatorOpacus)
+        assert isinstance(functorch_model.sample_calc, SamplewiseCalculatorFunctorch)
+        assert opacus_model.sample_calc.ignore_index == 3
+        assert functorch_model.sample_calc.ignore_index == 3
+
+    @pytest.mark.parametrize("ignore_index", [None, 5])
+    def test_not_forwarded_to_wrapped_init(self, ignore_index):
+        """ignore_index must not leak into the wrapped module's __init__."""
+        init_log = {}
+        module = _make_module_with_criterion(nn.CrossEntropyLoss(), init_log=init_log)
+        analyzer(module, ignore_index=ignore_index, extra=1)
+
+        assert init_log == {"extra": 1}
+
+
 class TestAnalyzerInitialization:
     """Test Analyzer class initialization."""
 

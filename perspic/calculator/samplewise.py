@@ -64,7 +64,12 @@ class SamplewiseCalculator(ABC):
                 loss and should be excluded from the sample-wise projection
                 (mirrors `nn.CrossEntropyLoss`'s `ignore_index`, default
                 -100). Pass `None` to disable masking entirely regardless of
-                the batch's contents.
+                the batch's contents. `targets` must line up with the model
+                output's leading axes ((B, T) targets for (B, T, V) output;
+                a (B, V, T) output layout is not supported). Criteria that
+                shift labels internally (HF-style causal LM) must be given
+                already-shifted targets here, otherwise the mask is off by
+                one position.
 
         Returns:
             A `(mask, n_elements)` tuple. `mask` is `None` when no masking
@@ -78,6 +83,11 @@ class SamplewiseCalculator(ABC):
             When masking does apply, `mask` is a boolean tensor shaped like
             `targets` (True = real, scored position). `n_elements` is
             `targets.numel()` when `mask is None`, else `mask.sum()`.
+
+        Warns:
+            UserWarning: If every position is `ignore_index`. The loss then
+                has no real positions, so chi_net/chi_loss for this batch are
+                NaN/0 (the return values are unchanged).
         """
         if ignore_index is None:
             return None, targets.numel()
@@ -87,7 +97,16 @@ class SamplewiseCalculator(ABC):
         if not bool(is_ignored.any()):
             return None, targets.numel()
         mask = ~is_ignored
-        return mask, mask.sum()
+        n_elements = mask.sum()
+        if n_elements == 0:
+            warnings.warn(
+                "Every target position equals ignore_index="
+                f"{ignore_index}; the loss has no real positions, so "
+                "chi_net/chi_loss will be NaN/0 for this batch.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return mask, n_elements
 
     @staticmethod
     def broadcast_mask(mask: torch.Tensor, ndim: int) -> torch.Tensor:
